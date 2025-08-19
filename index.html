@@ -2,132 +2,99 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <title>Binance Futures Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Google Fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
-
-  <!-- DataTables CSS -->
-  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
-
+  <title>Binance Futures Sinyal Paneli</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- DataTables -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/dataTables.bootstrap5.min.css">
   <style>
-    body {
-      font-family: 'Roboto', sans-serif;
-      background: #121212;
-      color: #e0e0e0;
-      margin: 20px;
-    }
-    h1 {
-      text-align: center;
-      color: #ffffff;
-      margin-bottom: 20px;
-    }
-    table.dataTable {
-      background: #1e1e1e;
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    table.dataTable th {
-      background: #2c2c2c;
-      color: #ffffff;
-      font-weight: 700;
-    }
-    .signal-buy {
-      color: #4caf50;
-      font-weight: bold;
-    }
-    .signal-sell {
-      color: #f44336;
-      font-weight: bold;
-    }
-    .details {
-      background: #2c2c2c;
-      padding: 10px;
-      border-radius: 6px;
-      margin: 10px 0;
-    }
+    body { background: #f4f6f9; font-family: Arial, sans-serif; }
+    .buy { color: #28a745; font-weight: bold; }
+    .sell { color: #dc3545; font-weight: bold; }
+    .neutral { color: #6c757d; font-weight: bold; }
+    .card-details { display: none; }
+    .table thead th { cursor: pointer; }
   </style>
 </head>
-<body>
-  <h1>📊 Binance Futures Dashboard</h1>
-  <table id="coinsTable" class="display" style="width:100%">
-    <thead>
-      <tr>
-        <th>Coin</th>
-        <th>Fiyat</th>
-        <th>24h %</th>
-        <th>Sinyal</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+<body class="p-4">
 
-  <!-- JQuery + DataTables + Binance -->
+  <div class="container">
+    <h2 class="mb-4 text-center">📊 Binance Futures Teknik Analiz Paneli</h2>
+
+    <!-- Seçim Menüsü -->
+    <div class="mb-3">
+      <label class="form-label fw-bold">Coin Listesi:</label>
+      <select id="listType" class="form-select w-auto d-inline-block">
+        <option value="top10">Top 10</option>
+        <option value="top50">Top 50</option>
+        <option value="all">Tümü</option>
+      </select>
+    </div>
+
+    <!-- Tablo -->
+    <table id="coinTable" class="table table-striped table-hover">
+      <thead class="table-dark">
+        <tr>
+          <th>Sembol</th>
+          <th>Fiyat</th>
+          <th>Sinyal</th>
+          <th>RSI</th>
+          <th>MACD</th>
+          <th>Trend</th>
+        </tr>
+      </thead>
+      <tbody id="coinBody"></tbody>
+    </table>
+  </div>
+
+  <!-- Bootstrap + DataTables JS -->
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.5/js/dataTables.bootstrap5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
   <script>
-    const table = $('#coinsTable').DataTable({
-      paging: true,
-      searching: true,
-      info: false
+    let table;
+
+    // DataTables başlat
+    $(document).ready(function () {
+      table = $('#coinTable').DataTable();
+      loadData("top10");
     });
 
-    // WebSocket Binance Futures (ticker stream)
-    const ws = new WebSocket('wss://fstream.binance.com/stream?streams=!ticker@arr');
+    // Menü değişince tabloyu güncelle
+    document.getElementById("listType").addEventListener("change", function () {
+      let type = this.value;
+      loadData(type);
+    });
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      data.data.forEach(ticker => {
-        if (!ticker.s.includes("USDT")) return; // sadece USDT pariteleri
+    // Coin verilerini çek (örnek simülasyon)
+    function loadData(type) {
+      table.clear().draw();
 
-        const coin = ticker.s;
-        const price = parseFloat(ticker.c).toFixed(4);
-        const change = parseFloat(ticker.P).toFixed(2);
+      // Burada Binance API'den gerçek veri çekeceğiz
+      // Şimdilik demo veriler:
+      let demoCoins = [
+        { symbol: "BTCUSDT", price: 67000, rsi: 65, macd: "Pozitif", trend: "Yükseliş" },
+        { symbol: "ETHUSDT", price: 3500, rsi: 72, macd: "Pozitif", trend: "Yükseliş" },
+        { symbol: "BNBUSDT", price: 580, rsi: 45, macd: "Negatif", trend: "Düşüş" }
+      ];
 
-        // Basit sinyal (örnek RSI/MACD yerine fiyat hareketine göre)
-        let signal = change > 0 ? '<span class="signal-buy">AL</span>' : '<span class="signal-sell">SAT</span>';
+      demoCoins.forEach(c => {
+        let signalClass = c.rsi > 70 ? "sell" : c.rsi < 30 ? "buy" : "neutral";
+        let signalText  = c.rsi > 70 ? "SAT" : c.rsi < 30 ? "AL" : "NÖTR";
 
-        const row = table.row(`#${coin}`);
-        if (row.length) {
-          row.data([coin, price, change + "%", signal]);
-        } else {
-          table.row.add([coin, price, change + "%", signal]).node().id = coin;
-        }
+        table.row.add([
+          `<span class="fw-bold">${c.symbol}</span>`,
+          `$${c.price}`,
+          `<span class="${signalClass}">${signalText}</span>`,
+          c.rsi,
+          c.macd,
+          c.trend
+        ]).draw(false);
       });
-      table.draw(false);
-    };
-
-    // Satıra tıklayınca detay aç
-    $('#coinsTable tbody').on('click', 'tr', function () {
-      let tr = $(this);
-      let row = table.row(tr);
-
-      if (row.child.isShown()) {
-        row.child.hide();
-        tr.removeClass('shown');
-      } else {
-        // RSI, MACD hesaplaması yerine örnek sahte veri
-        let rsi = (30 + Math.random()*40).toFixed(2);
-        let macd = (Math.random()*2 - 1).toFixed(2);
-        let sl = (parseFloat(row.data()[1]) * 0.97).toFixed(2);
-        let tp = (parseFloat(row.data()[1]) * 1.05).toFixed(2);
-
-        let details = `
-          <div class="details">
-            <b>RSI:</b> ${rsi}<br>
-            <b>MACD:</b> ${macd}<br>
-            <b>Stop Loss:</b> ${sl}<br>
-            <b>Take Profit:</b> ${tp}<br>
-            <b>Yorum:</b> RSI ${rsi > 70 ? "aşırı alım bölgesinde" : rsi < 30 ? "aşırı satım bölgesinde" : "nötr"}.
-            MACD ${macd > 0 ? "pozitif" : "negatif"} sinyal veriyor.
-          </div>
-        `;
-        row.child(details).show();
-        tr.addClass('shown');
-      }
-    });
+    }
   </script>
 </body>
 </html>
