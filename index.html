@@ -1,0 +1,121 @@
+
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Binance Futures Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #121212; color: #eee; margin: 0; padding: 0; }
+    h1 { text-align: center; padding: 15px; margin: 0; background: #1e1e1e; }
+    .controls { display: flex; justify-content: center; gap: 15px; background: #1e1e1e; padding: 10px; }
+    select, button, input { padding: 5px; border-radius: 4px; border: none; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; text-align: center; border-bottom: 1px solid #333; }
+    th { cursor: pointer; background: #1e1e1e; }
+    tr:hover { background: #1f1f1f; }
+    .signal-buy { color: #0f0; font-weight: bold; }
+    .signal-sell { color: #f00; font-weight: bold; }
+    .signal-neutral { color: #ff0; font-weight: bold; }
+    .details { display: none; padding: 10px; background: #1a1a1a; border-top: 1px solid #333; text-align: left; }
+    .accordion.open + .details { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Binance Futures Dashboard</h1>
+  <div class="controls">
+    <label>Zaman Dilimi: 
+      <select id="timeframe">
+        <option value="5m">5m</option>
+        <option value="15m" selected>15m</option>
+        <option value="1h">1h</option>
+      </select>
+    </label>
+    <label>Risk/Ödül: 
+      <select id="rr">
+        <option value="1">1:1</option>
+        <option value="1.5" selected>1:1.5</option>
+        <option value="2">1:2</option>
+      </select>
+    </label>
+    <label>Performans: 
+      <select id="perfMode">
+        <option value="all">Tüm Coinler</option>
+        <option value="top10">Top 10</option>
+        <option value="top50">Top 50</option>
+      </select>
+    </label>
+  </div>
+  <table id="coinTable">
+    <thead>
+      <tr>
+        <th data-sort="symbol">Sembol</th>
+        <th data-sort="last">Son</th>
+        <th data-sort="change">24s %</th>
+        <th data-sort="vol">24s Hacim</th>
+        <th data-sort="funding">Funding</th>
+        <th data-sort="signal">Sinyal</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    async function fetchData() {
+      const res = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+      const data = await res.json();
+      let filtered = data.filter(x => x.symbol.endsWith('USDT'));
+      const perfMode = document.getElementById('perfMode').value;
+      filtered.sort((a,b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
+      if (perfMode === 'top10') filtered = filtered.slice(0,10);
+      if (perfMode === 'top50') filtered = filtered.slice(0,50);
+      return filtered;
+    }
+
+    function computeSignal(row) {
+      const change = parseFloat(row.priceChangePercent);
+      const funding = parseFloat(row.lastFundingRate || 0);
+      if (change > 1 && funding >= 0) return {text:"AL", cls:"signal-buy"};
+      if (change < -1 && funding <= 0) return {text:"SAT", cls:"signal-sell"};
+      return {text:"NÖTR", cls:"signal-neutral"};
+    }
+
+    function renderTable(data) {
+      const tbody = document.querySelector("#coinTable tbody");
+      tbody.innerHTML = "";
+      data.forEach(row => {
+        const sig = computeSignal(row);
+        const tr = document.createElement("tr");
+        tr.className = "accordion";
+        tr.innerHTML = `<td>${row.symbol}</td><td>${parseFloat(row.lastPrice).toFixed(4)}</td>
+                        <td>${parseFloat(row.priceChangePercent).toFixed(2)}%</td>
+                        <td>${(row.quoteVolume/1e6).toFixed(2)}M</td>
+                        <td>${parseFloat(row.lastFundingRate||0).toFixed(4)}</td>
+                        <td class="${sig.cls}">${sig.text}</td>`;
+        tbody.appendChild(tr);
+        const details = document.createElement("tr");
+        details.innerHTML = `<td colspan="6"><div class="details">
+          <b>RSI:</b> Detaylı hesap<br>
+          <b>MACD:</b> Detaylı hesap<br>
+          <b>EMA20/50/200:</b> Kesişim bilgisi<br>
+          <b>ATR:</b> Volatilite<br>
+          <b>Bollinger:</b> Band durumu<br>
+          <b>Supertrend:</b> Trend yönü<br>
+          <b>Stoch RSI:</b> Aşırı alım/satım<br>
+          <b>Destek/Direnç:</b> Hesaplanan seviyeler<br>
+          <b>Stop Loss / Take Profit:</b> RR=${document.getElementById('rr').value}<br>
+          <b>Yorum:</b> Verilere dayalı teknik analiz yorumu...
+        </div></td>`;
+        tbody.appendChild(details);
+        tr.addEventListener("click", ()=> tr.classList.toggle("open"));
+      });
+    }
+
+    async function update() {
+      const data = await fetchData();
+      renderTable(data);
+    }
+    update();
+    setInterval(update, 30000);
+  </script>
+</body>
+</html>
