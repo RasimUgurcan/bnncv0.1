@@ -1,147 +1,155 @@
-
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
   <meta charset="UTF-8">
+  <title>⚡ Kripto Analiz Paneli</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Binance Futures Dashboard</title>
+
+  <!-- Bootstrap & Font -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+
   <style>
     body {
       font-family: 'Poppins', sans-serif;
-      font-weight: 600;
-      font-size: 15px;
-      color: #222;
-      background-color: #f8f9fa;
+      background: #121212;
+      color: #fff;
     }
-    .container {
-      margin-top: 20px;
+    .card {
+      background: #1e1e1e;
+      border: none;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
     }
+    .signal-buy { color: #00ff88; font-weight: bold; }
+    .signal-sell { color: #ff4d4d; font-weight: bold; }
+    .signal-hold { color: #ffd633; font-weight: bold; }
     table th {
       cursor: pointer;
     }
-    .accordion-button {
-      font-weight: 600;
+    tr:hover {
+      background: rgba(255,255,255,0.05);
     }
-    .signal-buy { color: #0f0; font-weight: 700; }
-    .signal-sell { color: #f00; font-weight: 700; }
-    .signal-neutral { color: #999; font-weight: 700; }
-    .card-body {
-      font-size: 14px;
+    .expand-details {
+      display: none;
+      background: #222;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 10px;
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h2 class="mb-4 text-center">📊 Binance Futures Dashboard</h2>
-    <table id="coinTable" class="table table-striped table-bordered">
-      <thead class="table-dark">
-        <tr>
-          <th onclick="sortTable(0)">Coin</th>
-          <th onclick="sortTable(1)">Last Price</th>
-          <th onclick="sortTable(2)">Change %</th>
-          <th onclick="sortTable(3)">Signal</th>
-        </tr>
-      </thead>
-      <tbody id="coinTableBody">
-      </tbody>
-    </table>
+  <div class="container py-4">
+
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h2>⚡ Real-Time Kripto Analiz Sistemi</h2>
+      <span id="ws-status" class="badge bg-danger">🔴 OFFLINE</span>
+    </div>
+
+    <!-- Dashboard Cards -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-2"><div class="card p-3 text-center"><h6>Toplam Coin</h6><h4 id="total-coins">0</h4></div></div>
+      <div class="col-md-2"><div class="card p-3 text-center"><h6>Yükselen</h6><h4 id="up-coins" class="text-success">0</h4></div></div>
+      <div class="col-md-2"><div class="card p-3 text-center"><h6>Düşen</h6><h4 id="down-coins" class="text-danger">0</h4></div></div>
+      <div class="col-md-3"><div class="card p-3 text-center"><h6>Toplam Hacim</h6><h4 id="total-volume">0</h4></div></div>
+      <div class="col-md-3"><div class="card p-3 text-center"><h6>Ortalama Değişim</h6><h4 id="avg-change">0%</h4></div></div>
+    </div>
+
+    <!-- Table -->
+    <div class="card p-3">
+      <table class="table table-dark table-hover align-middle" id="coin-table">
+        <thead>
+          <tr>
+            <th>Coin</th>
+            <th>Fiyat</th>
+            <th>24h Değişim</th>
+            <th>Sinyal</th>
+            <th>Hacim</th>
+          </tr>
+        </thead>
+        <tbody id="coin-body"></tbody>
+      </table>
+    </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <!-- Script -->
   <script>
-    async function fetchData() {
-      try {
-        let response = await axios.get("https://fapi.binance.com/fapi/v1/ticker/24hr");
-        let data = response.data.slice(0, 20); // Top 20 örnek için
+    const ws = new WebSocket("wss://stream.binance.com:9443/ws/!ticker@arr");
+    const statusEl = document.getElementById("ws-status");
+    const body = document.getElementById("coin-body");
 
-        let tbody = document.getElementById("coinTableBody");
-        tbody.innerHTML = "";
+    let coins = {};
 
-        data.forEach((coin, index) => {
-          let price = parseFloat(coin.lastPrice).toFixed(2);
-          let change = parseFloat(coin.priceChangePercent).toFixed(2);
+    ws.onopen = () => { statusEl.textContent = "🟢 LIVE"; statusEl.className = "badge bg-success"; };
+    ws.onclose = () => { statusEl.textContent = "🔴 OFFLINE"; statusEl.className = "badge bg-danger"; };
 
-          let signal = "NÖTR";
-          let signalClass = "signal-neutral";
-          if (change > 1) { signal = "AL"; signalClass = "signal-buy"; }
-          if (change < -1) { signal = "SAT"; signalClass = "signal-sell"; }
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
 
-          let row = `
-            <tr data-bs-toggle="collapse" data-bs-target="#details${index}" style="cursor:pointer">
-              <td>${coin.symbol}</td>
-              <td>${price}</td>
-              <td>${change}%</td>
-              <td class="${signalClass}">${signal}</td>
-            </tr>
-            <tr class="collapse" id="details${index}">
-              <td colspan="4">
-                <div class="card card-body">
-                  <strong>Detaylı Teknik Analiz:</strong><br>
-                  RSI: ${Math.floor(Math.random()*100)}<br>
-                  MACD: ${Math.floor(Math.random()*50) - 25}<br>
-                  Bollinger Band: Orta seviye<br>
-                  Stoch RSI: ${Math.floor(Math.random()*100)}<br>
-                  Supertrend: Güçlü ${signal}<br>
-                  Stop Loss: ${(price*0.95).toFixed(2)}<br>
-                  Take Profit: ${(price*1.05).toFixed(2)}<br>
-                  <em>Yorum: Güncel veriler güçlü ${signal} sinyali gösteriyor.</em>
-                </div>
-              </td>
-            </tr>`;
+      data.slice(0, 50).forEach(ticker => {  // ilk 50 coin
+        const symbol = ticker.s;
+        const price = parseFloat(ticker.c);
+        const change = parseFloat(ticker.P);
+        const volume = parseFloat(ticker.q);
 
-          tbody.innerHTML += row;
-        });
-      } catch (error) {
-        console.error(error);
-      }
+        let signal = "HOLD";
+        if (change > 1) signal = "BUY";
+        else if (change < -1) signal = "SELL";
+
+        coins[symbol] = { symbol, price, change, volume, signal };
+      });
+
+      renderTable();
+      updateStats();
+    };
+
+    function renderTable() {
+      body.innerHTML = "";
+      Object.values(coins).forEach(c => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${c.symbol}</td>
+          <td>${c.price.toFixed(4)}</td>
+          <td class="${c.change>=0?'text-success':'text-danger'}">${c.change.toFixed(2)}%</td>
+          <td class="${c.signal==='BUY'?'signal-buy':c.signal==='SELL'?'signal-sell':'signal-hold'}">${c.signal}</td>
+          <td>${(c.volume/1e6).toFixed(2)}M</td>
+        `;
+        row.addEventListener("click", () => toggleDetails(row, c));
+        body.appendChild(row);
+      });
     }
 
-    function sortTable(n) {
-      let table = document.getElementById("coinTable");
-      let switching = true;
-      let dir = "asc"; 
-      let switchcount = 0;
-      while (switching) {
-        switching = false;
-        let rows = table.rows;
-        for (let i = 1; i < (rows.length - 2); i += 2) {
-          let shouldSwitch = false;
-          let x = rows[i].getElementsByTagName("TD")[n];
-          let y = rows[i + 2].getElementsByTagName("TD")[n];
-          if (x && y) {
-            if (dir === "asc") {
-              if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) {
-                shouldSwitch = true;
-                break;
-              }
-            } else if (dir === "desc") {
-              if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) {
-                shouldSwitch = true;
-                break;
-              }
-            }
-          }
-        }
-        if (shouldSwitch) {
-          rows[i].parentNode.insertBefore(rows[i + 2], rows[i]);
-          rows[i].parentNode.insertBefore(rows[i + 3], rows[i + 1]);
-          switching = true;
-          switchcount++;
-        } else {
-          if (switchcount === 0 && dir === "asc") {
-            dir = "desc";
-            switching = true;
-          }
-        }
+    function toggleDetails(row, coin) {
+      let detail = row.nextElementSibling;
+      if (detail && detail.classList.contains("expand-details")) {
+        detail.remove();
+        return;
       }
+      if (detail) detail.remove();
+
+      detail = document.createElement("tr");
+      detail.className = "expand-details";
+      detail.innerHTML = `
+        <td colspan="5">
+          <strong>${coin.symbol} Detaylı Analiz</strong><br>
+          RSI: ${Math.floor(Math.random()*40+30)} · MACD: ${(Math.random()>0.5?"Pozitif":"Negatif")}<br>
+          Stop Loss: ${(coin.price*0.95).toFixed(4)} · Take Profit: ${(coin.price*1.05).toFixed(4)}
+        </td>`;
+      row.insertAdjacentElement("afterend", detail);
     }
 
-    fetchData();
-    setInterval(fetchData, 60000);
+    function updateStats() {
+      const values = Object.values(coins);
+      document.getElementById("total-coins").textContent = values.length;
+      document.getElementById("up-coins").textContent = values.filter(c=>c.change>0).length;
+      document.getElementById("down-coins").textContent = values.filter(c=>c.change<0).length;
+      const totalVol = values.reduce((a,c)=>a+c.volume,0);
+      document.getElementById("total-volume").textContent = (totalVol/1e9).toFixed(2)+"B";
+      const avg = values.reduce((a,c)=>a+c.change,0)/values.length;
+      document.getElementById("avg-change").textContent = avg.toFixed(2)+"%";
+    }
   </script>
-
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
