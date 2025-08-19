@@ -2,154 +2,132 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <title>⚡ Kripto Analiz Paneli</title>
+  <title>Binance Futures Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- Bootstrap & Font -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+
+  <!-- DataTables CSS -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
 
   <style>
     body {
-      font-family: 'Poppins', sans-serif;
+      font-family: 'Roboto', sans-serif;
       background: #121212;
-      color: #fff;
+      color: #e0e0e0;
+      margin: 20px;
     }
-    .card {
+    h1 {
+      text-align: center;
+      color: #ffffff;
+      margin-bottom: 20px;
+    }
+    table.dataTable {
       background: #1e1e1e;
-      border: none;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-    }
-    .signal-buy { color: #00ff88; font-weight: bold; }
-    .signal-sell { color: #ff4d4d; font-weight: bold; }
-    .signal-hold { color: #ffd633; font-weight: bold; }
-    table th {
-      cursor: pointer;
-    }
-    tr:hover {
-      background: rgba(255,255,255,0.05);
-    }
-    .expand-details {
-      display: none;
-      background: #222;
-      padding: 15px;
       border-radius: 8px;
-      margin-top: 10px;
+      overflow: hidden;
+    }
+    table.dataTable th {
+      background: #2c2c2c;
+      color: #ffffff;
+      font-weight: 700;
+    }
+    .signal-buy {
+      color: #4caf50;
+      font-weight: bold;
+    }
+    .signal-sell {
+      color: #f44336;
+      font-weight: bold;
+    }
+    .details {
+      background: #2c2c2c;
+      padding: 10px;
+      border-radius: 6px;
+      margin: 10px 0;
     }
   </style>
 </head>
 <body>
-  <div class="container py-4">
+  <h1>📊 Binance Futures Dashboard</h1>
+  <table id="coinsTable" class="display" style="width:100%">
+    <thead>
+      <tr>
+        <th>Coin</th>
+        <th>Fiyat</th>
+        <th>24h %</th>
+        <th>Sinyal</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
-    <!-- Header -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-      <h2>⚡ Real-Time Kripto Analiz Sistemi</h2>
-      <span id="ws-status" class="badge bg-danger">🔴 OFFLINE</span>
-    </div>
+  <!-- JQuery + DataTables + Binance -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
 
-    <!-- Dashboard Cards -->
-    <div class="row g-3 mb-4">
-      <div class="col-md-2"><div class="card p-3 text-center"><h6>Toplam Coin</h6><h4 id="total-coins">0</h4></div></div>
-      <div class="col-md-2"><div class="card p-3 text-center"><h6>Yükselen</h6><h4 id="up-coins" class="text-success">0</h4></div></div>
-      <div class="col-md-2"><div class="card p-3 text-center"><h6>Düşen</h6><h4 id="down-coins" class="text-danger">0</h4></div></div>
-      <div class="col-md-3"><div class="card p-3 text-center"><h6>Toplam Hacim</h6><h4 id="total-volume">0</h4></div></div>
-      <div class="col-md-3"><div class="card p-3 text-center"><h6>Ortalama Değişim</h6><h4 id="avg-change">0%</h4></div></div>
-    </div>
-
-    <!-- Table -->
-    <div class="card p-3">
-      <table class="table table-dark table-hover align-middle" id="coin-table">
-        <thead>
-          <tr>
-            <th>Coin</th>
-            <th>Fiyat</th>
-            <th>24h Değişim</th>
-            <th>Sinyal</th>
-            <th>Hacim</th>
-          </tr>
-        </thead>
-        <tbody id="coin-body"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Script -->
   <script>
-    const ws = new WebSocket("wss://stream.binance.com:9443/ws/!ticker@arr");
-    const statusEl = document.getElementById("ws-status");
-    const body = document.getElementById("coin-body");
+    const table = $('#coinsTable').DataTable({
+      paging: true,
+      searching: true,
+      info: false
+    });
 
-    let coins = {};
-
-    ws.onopen = () => { statusEl.textContent = "🟢 LIVE"; statusEl.className = "badge bg-success"; };
-    ws.onclose = () => { statusEl.textContent = "🔴 OFFLINE"; statusEl.className = "badge bg-danger"; };
+    // WebSocket Binance Futures (ticker stream)
+    const ws = new WebSocket('wss://fstream.binance.com/stream?streams=!ticker@arr');
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      data.data.forEach(ticker => {
+        if (!ticker.s.includes("USDT")) return; // sadece USDT pariteleri
 
-      data.slice(0, 50).forEach(ticker => {  // ilk 50 coin
-        const symbol = ticker.s;
-        const price = parseFloat(ticker.c);
-        const change = parseFloat(ticker.P);
-        const volume = parseFloat(ticker.q);
+        const coin = ticker.s;
+        const price = parseFloat(ticker.c).toFixed(4);
+        const change = parseFloat(ticker.P).toFixed(2);
 
-        let signal = "HOLD";
-        if (change > 1) signal = "BUY";
-        else if (change < -1) signal = "SELL";
+        // Basit sinyal (örnek RSI/MACD yerine fiyat hareketine göre)
+        let signal = change > 0 ? '<span class="signal-buy">AL</span>' : '<span class="signal-sell">SAT</span>';
 
-        coins[symbol] = { symbol, price, change, volume, signal };
+        const row = table.row(`#${coin}`);
+        if (row.length) {
+          row.data([coin, price, change + "%", signal]);
+        } else {
+          table.row.add([coin, price, change + "%", signal]).node().id = coin;
+        }
       });
-
-      renderTable();
-      updateStats();
+      table.draw(false);
     };
 
-    function renderTable() {
-      body.innerHTML = "";
-      Object.values(coins).forEach(c => {
-        const row = document.createElement("tr");
-        row.innerHTML = `
-          <td>${c.symbol}</td>
-          <td>${c.price.toFixed(4)}</td>
-          <td class="${c.change>=0?'text-success':'text-danger'}">${c.change.toFixed(2)}%</td>
-          <td class="${c.signal==='BUY'?'signal-buy':c.signal==='SELL'?'signal-sell':'signal-hold'}">${c.signal}</td>
-          <td>${(c.volume/1e6).toFixed(2)}M</td>
+    // Satıra tıklayınca detay aç
+    $('#coinsTable tbody').on('click', 'tr', function () {
+      let tr = $(this);
+      let row = table.row(tr);
+
+      if (row.child.isShown()) {
+        row.child.hide();
+        tr.removeClass('shown');
+      } else {
+        // RSI, MACD hesaplaması yerine örnek sahte veri
+        let rsi = (30 + Math.random()*40).toFixed(2);
+        let macd = (Math.random()*2 - 1).toFixed(2);
+        let sl = (parseFloat(row.data()[1]) * 0.97).toFixed(2);
+        let tp = (parseFloat(row.data()[1]) * 1.05).toFixed(2);
+
+        let details = `
+          <div class="details">
+            <b>RSI:</b> ${rsi}<br>
+            <b>MACD:</b> ${macd}<br>
+            <b>Stop Loss:</b> ${sl}<br>
+            <b>Take Profit:</b> ${tp}<br>
+            <b>Yorum:</b> RSI ${rsi > 70 ? "aşırı alım bölgesinde" : rsi < 30 ? "aşırı satım bölgesinde" : "nötr"}.
+            MACD ${macd > 0 ? "pozitif" : "negatif"} sinyal veriyor.
+          </div>
         `;
-        row.addEventListener("click", () => toggleDetails(row, c));
-        body.appendChild(row);
-      });
-    }
-
-    function toggleDetails(row, coin) {
-      let detail = row.nextElementSibling;
-      if (detail && detail.classList.contains("expand-details")) {
-        detail.remove();
-        return;
+        row.child(details).show();
+        tr.addClass('shown');
       }
-      if (detail) detail.remove();
-
-      detail = document.createElement("tr");
-      detail.className = "expand-details";
-      detail.innerHTML = `
-        <td colspan="5">
-          <strong>${coin.symbol} Detaylı Analiz</strong><br>
-          RSI: ${Math.floor(Math.random()*40+30)} · MACD: ${(Math.random()>0.5?"Pozitif":"Negatif")}<br>
-          Stop Loss: ${(coin.price*0.95).toFixed(4)} · Take Profit: ${(coin.price*1.05).toFixed(4)}
-        </td>`;
-      row.insertAdjacentElement("afterend", detail);
-    }
-
-    function updateStats() {
-      const values = Object.values(coins);
-      document.getElementById("total-coins").textContent = values.length;
-      document.getElementById("up-coins").textContent = values.filter(c=>c.change>0).length;
-      document.getElementById("down-coins").textContent = values.filter(c=>c.change<0).length;
-      const totalVol = values.reduce((a,c)=>a+c.volume,0);
-      document.getElementById("total-volume").textContent = (totalVol/1e9).toFixed(2)+"B";
-      const avg = values.reduce((a,c)=>a+c.change,0)/values.length;
-      document.getElementById("avg-change").textContent = avg.toFixed(2)+"%";
-    }
+    });
   </script>
 </body>
 </html>
