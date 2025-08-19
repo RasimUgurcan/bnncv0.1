@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Binance Futures (USDT-M) — Top10/50 + Özel Liste</title>
+<style>
+  :root{--bg:#0b0f1a;--card:#12182a;--muted:#8fa0c7;--ok:#1fd28b;--bad:#ff4d4f;--text:#e8ecf6;--accent:#7aa2f7;--chip:#1b2340;--chipb:#2a3864;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Ubuntu,sans-serif}
+  header{padding:14px;border-bottom:1px solid #1f2741;position:sticky;top:0;background:#0c1324;z-index:5}
+  h1{margin:0;font-size:18px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .control{background:var(--card);padding:8px;border-radius:8px;font-size:13px}
+  main{display:flex;gap:10px;padding:10px}
+  table{width:100%;border-collapse:collapse}
+  thead th{font-size:12px;color:var(--muted);text-align:left;padding:4px}
+  tbody td{padding:6px;background:var(--card);border:1px solid #1f2741;font-size:13px;cursor:pointer}
+  tbody tr:hover td{background:#172038}
+  .sym{font-weight:600}
+  .pos{color:var(--ok)} .neg{color:var(--bad)}
+  .drawer{width:300px;min-width:300px;background:#0c1324;padding:10px;border-left:1px solid #1f2741;display:none;flex-direction:column}
+  canvas{width:100%;height:150px;background:#0b1022;border:1px solid #1f2741;margin-top:6px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .chip{background:var(--chip);border:1px solid var(--chipb);padding:4px 6px;border-radius:999px;font-size:12px;display:flex;align-items:center;gap:4px}
+  .chip button{background:transparent;border:0;color:#9fb1df;cursor:pointer}
+</style>
+</head>
+<body>
+<header>
+  <h1>Binance Futures (USDT‑M) Tarayıcı</h1>
+  <div class="controls">
+    <div class="control">
+      Görüntüle:
+      <select id="mode">
+        <option value="all">Hepsi</option>
+        <option value="top10">Top 10 Hacim</option>
+        <option value="top50">Top 50 Hacim</option>
+        <option value="custom">Özel Liste</option>
+      </select>
+    </div>
+    <div class="control">
+      Özel liste: <input id="symInput" placeholder="BTCUSDT"> <button id="addBtn">Ekle</button>
+      <div class="chips" id="chips"></div>
+    </div>
+  </div>
+</header>
+<main>
+  <section style="flex:1">
+    <table>
+      <thead><tr><th>Sembol</th><th>Son</th><th>%24s</th><th>Hacim USDT</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+  <aside class="drawer" id="drawer">
+    <h3 id="dTitle">—</h3>
+    <canvas id="chart" width="280" height="150"></canvas>
+    <div id="info"></div>
+  </aside>
+</main>
+<script>
+let ws, tickers=new Map(), marks=new Map(), symbolMeta=new Map();
+let customList=new Set(JSON.parse(localStorage.getItem('watchlist')||'[]'));
+const rows=document.getElementById('rows'), drawer=document.getElementById('drawer');
+const dTitle=document.getElementById('dTitle'), ctx=document.getElementById('chart').getContext('2d'), info=document.getElementById('info');
+function connect(){
+  ws=new WebSocket('wss://fstream.binance.com/stream?streams=!ticker@arr');
+  ws.onmessage=e=>{const msg=JSON.parse(e.data);if(!msg.data)return;for(const t of msg.data){tickers.set(t.s,t);} render();};
+}
+async function loadMeta(){const r=await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');const d=await r.json();for(const s of d.symbols){symbolMeta.set(s.symbol,s);}}
+function render(){
+  let arr=[];for(const [sym,t] of tickers){arr.push({sym,last:+t.c,P:+t.P,q:+t.q});}
+  arr.sort((a,b)=>b.q-a.q);
+  const mode=document.getElementById('mode').value;
+  if(mode==='top10') arr=arr.slice(0,10);
+  if(mode==='top50') arr=arr.slice(0,50);
+  if(mode==='custom') arr=arr.filter(x=>customList.has(x.sym));
+  const frag=document.createDocumentFragment();
+  for(const it of arr){const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="sym">${it.sym}</td><td>${it.last}</td><td class="${it.P>=0?'pos':'neg'}">${it.P}%</td><td>${Math.round(it.q)}</td>`;
+    tr.onclick=()=>openTA(it.sym);frag.appendChild(tr);}
+  rows.replaceChildren(frag);renderChips();
+}
+function renderChips(){const chips=document.getElementById('chips');chips.innerHTML='';for(const sym of customList){const c=document.createElement('div');c.className='chip';c.innerHTML=`${sym} <button>x</button>`;c.querySelector('button').onclick=()=>{customList.delete(sym);saveList();render();};chips.appendChild(c);}}
+function saveList(){localStorage.setItem('watchlist',JSON.stringify([...customList]));}
+document.getElementById('addBtn').onclick=()=>{const s=document.getElementById('symInput').value.trim().toUpperCase();if(symbolMeta.has(s)){customList.add(s);saveList();render();}};
+document.getElementById('mode').onchange=()=>render();
+async function openTA(sym){
+  dTitle.textContent=sym;drawer.style.display='flex';
+  const r=await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=15m&limit=100`);
+  const d=await r.json();const closes=d.map(x=>+x[4]);
+  ctx.clearRect(0,0,280,150);ctx.beginPath();closes.forEach((c,i)=>{const x=i*280/closes.length;const y=150-(c/Math.max(...closes))*150; if(i==0) ctx.moveTo(x,y); else ctx.lineTo(x,y);});ctx.strokeStyle='#7aa2f7';ctx.stroke();
+  info.textContent=`Son fiyat: ${closes[closes.length-1]}`;
+}
+loadMeta().then(connect);
+</script>
+</body>
+</html>
