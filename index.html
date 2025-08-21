@@ -1,119 +1,368 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="tr">
-<head>
-  <meta charset="UTF-8">
-  <title>Binance Tarzı Canlı Kripto Paneli</title>
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/jquery.dataTables.min.css">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Binance Canlı Liste + TA (Tek Dosya)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React + Babel Standalone (yalnız geliştirme için) -->
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      html, body { background:#0b1220; }
+      .ring-soft { box-shadow: 0 0 0 1px rgba(16,185,129,.25); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
 
-  <style>
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background-color: #121212;
-      color: #eaeaea;
-      margin: 0;
-      padding: 20px;
-    }
-    h2 {
-      text-align: center;
-      color: #f3ba2f; /* Binance sarısı */
-      margin-bottom: 20px;
-    }
-    table.dataTable {
-      background: #1e1e1e;
-      border-radius: 10px;
-      overflow: hidden;
-      border: none;
-      color: #eaeaea;
-    }
-    thead {
-      background: #2a2a2a;
-      color: #f3ba2f;
-      font-size: 15px;
-    }
-    table.dataTable tbody tr {
-      background: #1e1e1e;
-      transition: background 0.2s ease;
-    }
-    table.dataTable tbody tr:hover {
-      background: #2a2a2a;
-    }
-    td {
-      padding: 12px;
-      text-align: center;
-      font-size: 14px;
-    }
-    .buy {
-      color: #00ff88;
-      font-weight: bold;
-    }
-    .sell {
-      color: #ff4d4d;
-      font-weight: bold;
-    }
-  </style>
-</head>
-<body>
-  <h2>📊 Binance Tarzı Canlı Kripto Paneli</h2>
-  <table id="cryptoTable" class="display" style="width:100%">
-    <thead>
-      <tr>
-        <th>Coin</th>
-        <th>Fiyat (USDT)</th>
-        <th>24s Değişim</th>
-        <th>Sinyal</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+    <script type="text/babel" data-presets="react">
+      const { useEffect, useMemo, useRef, useState } = React;
+      const REST_BASE = "https://api.binance.com";
+      const WSS_BASE  = "wss://stream.binance.com:9443";
 
-  <script>
-    let table = $('#cryptoTable').DataTable({
-      paging: false,
-      searching: false,
-      info: false
-    });
+      // ---------------- Helpers ----------------
+      function uniq(arr){ return Array.from(new Set(arr)); }
+      function num(n, d=6){ const x=Number(n); if(isNaN(x)) return "-"; return x.toLocaleString(undefined, { maximumFractionDigits:d }); }
+      function pct(a,b){ if(!a||!b) return 0; return ((a-b)/b)*100; }
+      function toUsdtSymbol(raw){ let s=String(raw||"").toUpperCase().replace(/\s+/g,""); if(!s.endsWith("USDT")) s = s+"USDT"; return s; }
 
-    // Takip edilecek coinler
-    let symbols = ["btcusdt","ethusdt","bnbusdt","xrpusdt","solusdt"];
+      function tfToBinance(tf){ if(tf==="1m"||tf==="1M") return "1m"; if(tf==="1H") return "1h"; if(tf==="4H") return "4h"; if(tf==="1D") return "1d"; if(tf==="1W") return "1w"; return "1h"; }
+      function tfToMs(tf){ switch(tf){ case "1m": case "1M": return 60*1000; case "1H": return 60*60*1000; case "4H": return 4*60*60*1000; case "1D": return 24*60*60*1000; case "1W": return 7*24*60*60*1000; default: return 60*60*1000; } }
+      function currentCandleStart(tf){ const ms=tfToMs(tf); const now=Date.now(); return Math.floor(now/ms)*ms; }
 
-    // Binance WebSocket stream
-    let streams = symbols.map(s => s + "@ticker").join("/");
-    let ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+      // Math indicators (ES6, null-safe; kaçınılmaz yerde basit for’lar)
+      function computeEMA(values, period){ if(!values || values.length<period) return null; const k=2/(period+1); let ema=0; for(let i=0;i<period;i++) ema += values[i]; ema/=period; for(let i=period;i<values.length;i++){ ema = values[i]*k + ema*(1-k); } return ema; }
+      function computeRSI_TV(closes, length=14){ if(!closes || closes.length<length+1) return null; const ups=[], downs=[]; for(let i=1;i<closes.length;i++){ const ch=closes[i]-closes[i-1]; ups.push(ch>0?ch:0); downs.push(ch<0?-ch:0); } function rma(arr,len){ if(arr.length<len) return null; let sum=0; for(let i=0;i<len;i++) sum+=arr[i]; let prev=sum/len; for(let i=len;i<arr.length;i++){ prev=(prev*(len-1)+arr[i])/len; } return prev; } const rU=rma(ups,length), rD=rma(downs,length); if(rU==null||rD==null) return null; if(rD===0) return 100; const rs=rU/rD; return 100-100/(1+rs); }
+      function computeMACD(values){ if(!values || values.length<35) return { macd:null, signal:null, hist:null }; const macdSeries=[]; for(let i=26;i<=values.length;i++){ const slice=values.slice(0,i); const e12=computeEMA(slice,12); const e26=computeEMA(slice,26); if(e12!=null && e26!=null) macdSeries.push(e12-e26); } const macd = macdSeries.length? macdSeries[macdSeries.length-1] : null; const signal = computeEMA(macdSeries,9); const hist = (macd!=null && signal!=null) ? macd-signal : null; return { macd, signal, hist }; }
+      function computeATR14(hlc){ if(!hlc||!hlc.h||!hlc.l||!hlc.c) return null; const h=hlc.h, l=hlc.l, c=hlc.c; if(h.length<15) return null; const tr=[]; for(let i=1;i<h.length;i++){ const m1=h[i]-l[i]; const m2=Math.abs(h[i]-c[i-1]); const m3=Math.abs(l[i]-c[i-1]); tr.push(Math.max(m1,m2,m3)); } return computeEMA(tr,14); }
+      function computePivotsClassic(h,l,c){ if(h==null||l==null||c==null) return null; const P=(h+l+c)/3; return { P, R1:2*P-l, S1:2*P-h, R2:P+(h-l), S2:P-(h-l), R3:h+2*(P-l), S3:l-2*(h-P) }; }
+      function computeRVOLStrong(qSeries, nSeries){ if(!qSeries||qSeries.length<21) return null; const lastQ=qSeries[qSeries.length-1]; function rma(series,len){ if(!series||series.length<len) return null; let sum=0; for(let i=0;i<len;i++) sum+=series[i]; let prev=sum/len; for(let i=len;i<series.length;i++){ prev=(prev*(len-1)+series[i])/len; } return prev; } const tailQ=qSeries.slice(Math.max(0,qSeries.length-21)); const baseQ=rma(tailQ.slice(0,20),20); const rq=(baseQ&&baseQ>0)?(lastQ/baseQ):null; let rn=null; if(nSeries&&nSeries.length>=21){ const tailN=nSeries.slice(Math.max(0,nSeries.length-21)); const baseN=rma(tailN.slice(0,20),20); const lastN=nSeries[nSeries.length-1]; rn=(baseN&&baseN>0)?(lastN/baseN):null; } if(rq==null && rn==null) return null; if(rq!=null && rn!=null) return Math.sqrt(rq*rn); return rq!=null?rq:rn; }
 
-    ws.onmessage = function(event) {
-      let msg = JSON.parse(event.data);
-      let data = msg.data;
-
-      let symbol = data.s;
-      let price = parseFloat(data.c).toFixed(2);
-      let change = parseFloat(data.P).toFixed(2);
-
-      let signalClass = change >= 0 ? "buy" : "sell";
-      let signalText  = change >= 0 ? "AL" : "SAT";
-
-      // Satır güncelleme
-      let row = table.row(function(idx, d, node) {
-        return d[0] === symbol;
-      });
-
-      if (row.node()) {
-        row.data([
-          symbol,
-          `$${price}`,
-          `<span class="${signalClass}">${change}%</span>`,
-          `<span class="${signalClass}">${signalText}</span>`
-        ]).draw(false);
-      } else {
-        table.row.add([
-          symbol,
-          `$${price}`,
-          `<span class="${signalClass}">${change}%</span>`,
-          `<span class="${signalClass}">${signalText}</span>`
-        ]).draw(false);
+      function computeSwingLevels(ohlc, left, right, lookback){ if(!ohlc||!ohlc.h||!ohlc.l) return {highs:[],lows:[]}; const H=ohlc.h, L=ohlc.l; const n=H.length; if(!n) return {highs:[],lows:[]}; if(typeof lookback!=="number") lookback=Math.min(300,n); const start=Math.max(0,n-lookback); const highs=[], lows=[]; for(let i=Math.max(start,left); i<n-right; i++){ let isHigh=true, isLow=true; for(let j=i-left; j<=i+right; j++){ if(j===i) continue; if(H[j]>=H[i]) isHigh=false; if(L[j]<=L[i]) isLow=false; if(!isHigh && !isLow) break; } if(isHigh) highs.push(H[i]); if(isLow) lows.push(L[i]); } highs.sort((a,b)=>a-b); lows.sort((a,b)=>a-b); return { highs, lows }; }
+      function nearestSR(price, highs, lows){ let sup=null, res=null; if(typeof price!=="number"||isNaN(price)) return {support:null,resistance:null}; for(let i=lows.length-1;i>=0;i--){ if(lows[i]<price){ sup=lows[i]; break; } } for(let k=0;k<highs.length;k++){ if(highs[k]>price){ res=highs[k]; break; } } return { support:sup, resistance:res };
       }
-    };
-  </script>
-</body>
+      function srZones(support, resistance, atr, price){ const z = (typeof atr==="number"&&atr>0) ? (atr*0.25) : (typeof price==="number"? price*0.001 : 0); const supZone = support!=null? [support-z, support+z] : null; const resZone = resistance!=null? [resistance-z, resistance+z] : null; return { supZone, resZone }; }
+
+      function deriveSignal(rsi, hist, ema20, ema50){ if(rsi==null||hist==null||ema20==null||ema50==null) return "NEUTRAL"; if(rsi>=60 && hist>0 && ema20>ema50) return "LONG"; if(rsi<=40 && hist<0 && ema20<ema50) return "SHORT"; return "NEUTRAL"; }
+
+      function buildCommentary(sym, price, rsi, macd, hist, ema20, ema50, ema200, changePct24h){ const parts=[]; parts.push(`${sym} fiyat ${price?num(price,6):"-"} USDT.`); if(typeof changePct24h==="number"){ const dir=changePct24h>=0?"artı":"eksi"; parts.push(`24s değişim ${changePct24h.toFixed(2)}% (${dir}).`);} if(rsi!=null){ const zone = rsi>70?"aşırı alım": rsi<30?"aşırı satım": rsi>55?"pozitif": rsi<45?"negatif":"nötr"; parts.push(`RSI ${rsi.toFixed(1)} (${zone}).`);} if(macd!=null && hist!=null) parts.push(`MACD ${macd.toFixed(4)}, hist ${hist.toFixed(4)}.`); if(ema20!=null && ema50!=null) parts.push(`EMA20 ${num(ema20,6)}, EMA50 ${num(ema50,6)} ${ema20>ema50?"(trend yukarı)": ema20<ema50?"(trend aşağı)":"(kesişim)"}.`); if(ema200!=null) parts.push(`EMA200 ${num(ema200,6)}.`); const sig=deriveSignal(rsi,hist,ema20,ema50); parts.push(`Sinyal: ${sig}.`); return parts.join(" "); }
+
+      // ---------------- API helpers ----------------
+      async function loadTopByVolume(n){ const url=`${REST_BASE}/api/v3/ticker/24hr`; const r=await fetch(url); const all=await r.json(); const arr=(Array.isArray(all)?all:[]) .filter(x=> typeof x?.symbol==="string" && x.symbol.endsWith("USDT") && !x.symbol.includes("UPUSDT") && !x.symbol.includes("DOWNUSDT")) .map(x=>({ symbol:x.symbol, qv:Number(x.quoteVolume)||0 })) .sort((a,b)=>b.qv-a.qv) .slice(0,n) .map(x=>x.symbol); return arr; }
+
+      function CryptoLiveList(){
+        const [mode, setMode] = useState("TOP10");
+        const [tf, setTf] = useState("1H");
+        const [symbols, setSymbols] = useState([]);
+        const [customInput, setCustomInput] = useState("");
+        const [data, setData] = useState({});
+        const [expanded, setExpanded] = useState(null);
+        const [tbMode, setTbMode] = useState("QUOTE");
+        const [tbUpper, setTbUpper] = useState(0.55);
+        const [tbLower, setTbLower] = useState(0.45);
+        const [rvolThresh, setRvolThresh] = useState(1.5);
+        const [sortKey, setSortKey] = useState("symbol");
+        const [sortDir, setSortDir] = useState("asc");
+
+        const wsRef = useRef(null);
+        const reconnectRef = useRef({ tries:0, max:5 });
+        const closesRef = useRef({}); // sym -> [closes]
+        const ohlcRef = useRef({});   // sym -> {o,h,l,c,v,q,n}
+        const aggsRef = useRef({});   // sym -> [[ts, qty, isTbBuy, price], ...]
+        const cStartRef = useRef({}); // sym -> candle start ts
+        const topCacheRef = useRef({ TOP10:[], TOP50:[] });
+
+        // Initial TOP10
+        useEffect(()=>{ (async function(){ try{ const list=await loadTopByVolume(10); setSymbols(list); topCacheRef.current.TOP10=list; }catch(e){} })(); },[]);
+
+        // (Re)connect on symbols/tf change
+        useEffect(()=>{ if(!symbols.length) return; connectWS(symbols); return ()=>cleanupWS(); }, [symbols.join(","), tf]);
+
+        function cleanupWS(){ if(wsRef.current){ try{ wsRef.current.close(); }catch(e){} } wsRef.current=null; }
+
+        function connectWS(list){ cleanupWS(); reconnectRef.current.tries=0; if(!list||!list.length) return; const kint=tfToBinance(tf); const streams=list.map(s=>`${s.toLowerCase()}@miniTicker/${s.toLowerCase()}@kline_${kint}/${s.toLowerCase()}@bookTicker/${s.toLowerCase()}@aggTrade`).join("/"); const url=`${WSS_BASE}/stream?streams=${streams}`; const ws=new WebSocket(url); wsRef.current=ws; ws.onopen=function(){ reconnectRef.current.tries=0; }; ws.onmessage=onWSEvent; ws.onerror=function(){}; ws.onclose=function(ev){ const code=(ev&&ev.code)||1006; const retry=reconnectRef.current.tries<reconnectRef.current.max && code!==1008; if(!retry) return; reconnectRef.current.tries++; const delay=Math.min(15000, 1000*Math.pow(2,reconnectRef.current.tries)); setTimeout(()=>{ if(symbols.length) connectWS(symbols); }, delay); };
+        }
+
+        async function ensureHistory(sym){ // seed OHLC for TF
+          if(ohlcRef.current[sym] && ohlcRef.current[sym].c && ohlcRef.current[sym].c.length) return;
+          try{
+            const interval=tfToBinance(tf);
+            const url=`${REST_BASE}/api/v3/klines?symbol=${sym}&interval=${interval}&limit=500`;
+            const r=await fetch(url); const arr=await r.json(); if(Array.isArray(arr)){
+              const o=[],h=[],l=[],c=[],v=[],q=[],n=[];
+              for(let i=0;i<arr.length;i++){ const k=arr[i]; o.push(Number(k[1])); h.push(Number(k[2])); l.push(Number(k[3])); c.push(Number(k[4])); v.push(Number(k[5])); q.push(Number(k[7])); n.push(Number(k[8])); }
+              ohlcRef.current[sym]={o:o,h:h,l:l,c:c,v:v,q:q,n:n}; closesRef.current[sym]=c.slice();
+              const rsi=computeRSI_TV(c.slice(0,-1),14); const ema20=computeEMA(c,20); const ema50=computeEMA(c,50); const ema200=computeEMA(c,200); const macd=computeMACD(c); const atr=computeATR14(ohlcRef.current[sym]); const pivots=computePivotsClassic(h[h.length-2], l[l.length-2], c[c.length-2]);
+              setData(function(prev){ const row=prev[sym]||{}; const price=c.length?c[c.length-1]:null; const commentary=buildCommentary(sym,price,rsi,macd.macd,macd.hist,ema20,ema50,ema200, (row.changePct24h!=null?row.changePct24h:null)); const next=Object.assign({}, prev); next[sym]=Object.assign({}, row, { price:price, rsi:rsi, macd:macd.macd, macdHist:macd.hist, ema20:ema20, ema50:ema50, ema200:ema200, atr:atr, pivots:pivots, last:Date.now() }); return next; });
+            }
+          }catch(e){}
+        }
+
+        function onWSEvent(evt){
+          const txt = typeof evt.data==="string"? evt.data : new TextDecoder().decode(evt.data);
+          const msg = JSON.parse(txt); const payload = msg.data||msg;
+
+          // 24hr miniTicker
+          if(payload && payload.e==="24hrMiniTicker"){ const t=payload; const sym=t.s; const price=Number(t.c); const open=Number(t.o); const chg=open? pct(price,open) : 0; const qVol=Number(t.q)||null; setData(function(prev){ const row=prev[sym]||{}; const next=Object.assign({}, prev); next[sym]=Object.assign({}, row, { price:price, open:open, changePct24h:chg, qVol:qVol, last:Date.now() }); return next; }); }
+
+          // bookTicker (spread)
+          if(payload && payload.e==="bookTicker"){ const b=payload; const sym=b.s; const ask=Number(b.a), bid=Number(b.b); const mid = (ask && bid)? (ask+bid)/2 : null; const spreadPct = (mid && ask && bid)? ((ask-bid)/mid*100) : null; setData(function(prev){ const row=prev[sym]||{}; const next=Object.assign({}, prev); next[sym]=Object.assign({}, row, { ask:ask, bid:bid, spreadPct:spreadPct, last:Date.now() }); return next; }); }
+
+          // aggTrade (taker-buy intrabar & activity)
+          if(payload && payload.e==="aggTrade"){ const tA=payload; const symA=tA.s; const ts= typeof tA.T==="number"? tA.T : Date.now(); const qty=Number(tA.q); const price=Number(tA.p); const isBuyerMaker=!!tA.m; const isTbBuy = !isBuyerMaker; let buf = aggsRef.current[symA] || []; buf.push([ts, qty, isTbBuy, price]); // keep ~6h
+            const cutoff=ts-6*60*60*1000; let i0=0; while(i0<buf.length && buf[i0][0]<cutoff) i0++; if(i0>0) buf=buf.slice(i0); aggsRef.current[symA]=buf;
+            // quick activity counts
+            let tpm60=0; const cutoff60=ts-60000; for(let j=buf.length-1;j>=0;j--){ const t0=buf[j][0]; if(t0>=cutoff60) tpm60++; else break; }
+            // live taker-buy within current TF candle
+            let c0=cStartRef.current[symA]; if(typeof c0!=="number") c0=currentCandleStart(tf);
+            let buyB=0, totB=0, buyQ=0, totQ=0; for(let j=buf.length-1;j>=0;j--){ const e=buf[j]; if(e[0]<c0) break; const qy=e[1]||0; const pr=e[3]||0; totB+=qy; if(!isNaN(pr)&&pr>0) totQ+=qy*pr; if(e[2]){ buyB+=qy; if(!isNaN(pr)&&pr>0) buyQ+=qy*pr; } }
+            const tbrAggBase=(totB>0)?(buyB/totB):null; const tbrAggQuote=(totQ>0)?(buyQ/totQ):null; const tbrAgg=(tbMode==="QUOTE"? tbrAggQuote : tbrAggBase);
+            setData(function(prev){ const row=prev[symA]||{}; const next=Object.assign({}, prev); next[symA]=Object.assign({}, row, { tpm60:tpm60, tbr:(tbrAgg!=null? tbrAgg : (row.tbr!=null?row.tbr:null)), last:Date.now() }); return next; });
+          }
+
+          // kline (core TA)
+          if(payload && payload.e==="kline"){ const kmsg=payload; const sym=kmsg.s; const k=kmsg.k; const close=Number(k.c); const closed=!!k.x; const qvol=Number(k.q); const vBase=Number(k.v); const qQuote=Number(k.Q); const Vtbb=Number(k.V); // taker buy base
+            cStartRef.current[sym]=k.t; // candle start
+            // arrays
+            const ref = closesRef.current; ref[sym]=ref[sym]||[]; const carr=ref[sym]; if(!carr.length) carr.push(close); else { if(closed) carr.push(close); else carr[carr.length-1]=close; } if(carr.length>600) carr.splice(0, carr.length-600);
+            let ohlc = ohlcRef.current[sym] || (ohlcRef.current[sym]={o:[],h:[],l:[],c:[],v:[],q:[],n:[]});
+            function pushOrUpd(arr,val){ if(!arr.length) arr.push(val); else { if(closed) arr.push(val); else arr[arr.length-1]=val; } if(arr.length>600) arr.splice(0, arr.length-600); }
+            pushOrUpd(ohlc.o, Number(k.o)); pushOrUpd(ohlc.h, Number(k.h)); pushOrUpd(ohlc.l, Number(k.l)); pushOrUpd(ohlc.c, close); pushOrUpd(ohlc.v, vBase); pushOrUpd(ohlc.q, qvol); pushOrUpd(ohlc.n, Number(k.n));
+
+            // TA
+            const arrClosed = carr.length>1? carr.slice(0,-1): carr.slice();
+            const rsiClosed = computeRSI_TV(arrClosed,14);
+            const rsiLive   = computeRSI_TV(carr,14);
+            const ema20=computeEMA(carr,20), ema50=computeEMA(carr,50), ema200=computeEMA(carr,200);
+            const macd=computeMACD(carr);
+            const atr=computeATR14(ohlc);
+            const pivots = (ohlc.h.length>1 && ohlc.l.length>1 && ohlc.c.length>1)? computePivotsClassic(ohlc.h[ohlc.h.length-2], ohlc.l[ohlc.l.length-2], ohlc.c[ohlc.c.length-2]) : null;
+            let tbrTF=null; const ratioTickerQuote = (!isNaN(qQuote)&&!isNaN(qvol)&&qvol>0&&qQuote>0)? (qQuote/qvol) : null; const ratioTickerBase = (!isNaN(Vtbb)&&!isNaN(vBase)&&vBase>0&&Vtbb>0)? (Vtbb/vBase) : null;
+            let c0_=cStartRef.current[sym]; if(typeof c0_!=="number") c0_=currentCandleStart(tf);
+            const buf2=aggsRef.current[sym]||[]; let buyB=0, totB=0, buyQ=0, totQ=0; for(let j=buf2.length-1;j>=0;j--){ const e=buf2[j]; if(e[0]<c0_) break; const qy=e[1]||0; const pr=e[3]||0; totB+=qy; if(!isNaN(pr)&&pr>0) totQ+=qy*pr; if(e[2]){ buyB+=qy; if(!isNaN(pr)&&pr>0) buyQ+=qy*pr; } }
+            const ratioAggBase=(totB>0)?(buyB/totB):null; const ratioAggQuote=(totQ>0)?(buyQ/totQ):null; const wantQuote=(tbMode==="QUOTE"); const ratioTicker = wantQuote? ratioTickerQuote : ratioTickerBase; const ratioAgg = wantQuote? ratioAggQuote : ratioAggBase; if(ratioTicker!=null && ratioTicker>0){ tbrTF=ratioTicker; } else if(ratioAgg!=null){ tbrTF=ratioAgg; }
+            const rvol = computeRVOLStrong(ohlc.q, ohlc.n);
+            const sig = deriveSignal(rsiLive, macd.hist, ema20, ema50);
+
+            setData(function(prev){ const row=prev[sym]||{}; const commentary=buildCommentary(sym,close,rsiLive,macd.macd,macd.hist,ema20,ema50,ema200,(row.changePct24h!=null?row.changePct24h:null)); const next=Object.assign({}, prev); next[sym]=Object.assign({}, row, { price:close, rsi:rsiLive, rsiClosed:rsiClosed, macd:macd.macd, macdHist:macd.hist, ema20:ema20, ema50:ema50, ema200:ema200, atr:atr, pivots:pivots, rvol:rvol, tbr: (tbrTF!=null? tbrTF : (row.tbr!=null?row.tbr:null)), signal:sig, commentary:commentary, last:Date.now() }); return next; });
+            ensureHistory(sym); // lazy seed if boşsa
+          }
+        }
+
+        function applyMode(m){ setMode(m); if(m==="TOP10"){ if(topCacheRef.current.TOP10.length){ setSymbols(topCacheRef.current.TOP10.slice()); } else { loadTopByVolume(10).then(list=>{ topCacheRef.current.TOP10=list; setSymbols(list); }).catch(()=>{}); } } else if(m==="TOP50"){ if(topCacheRef.current.TOP50.length){ setSymbols(topCacheRef.current.TOP50.slice()); } else { loadTopByVolume(50).then(list=>{ topCacheRef.current.TOP50=list; setSymbols(list); }).catch(()=>{}); } } else if(m==="CUSTOM"){ if(!symbols.length) setSymbols(["BTCUSDT","ETHUSDT","BNBUSDT"]); } }
+        function addCustomSymbols(){ const parts=customInput.split(/[\,\n\s]+/).filter(Boolean); if(!parts.length) return; const syms=uniq(parts.map(toUsdtSymbol)); setSymbols(uniq([].concat(symbols||[], syms))); setMode("CUSTOM"); setCustomInput(""); }
+
+        const rows = useMemo(function(){
+          const base = (symbols||[]).map(s=>{ const row=data[s]||{}; const out={ symbol:s }; for(let k in row) out[k]=row[k]; return out; });
+          function val(row,key){ if(key==="symbol") return row.symbol||""; if(key==="price") return (typeof row.price==="number")?row.price:-Infinity; if(key==="changePct24h") return (typeof row.changePct24h==="number")?row.changePct24h:-Infinity; if(key==="rsi") return (typeof row.rsi==="number")?row.rsi:-Infinity; if(key==="volume24h"){ const v = (row.vol24h!=null?row.vol24h:(row.qVol!=null?row.qVol:null)); return (typeof v==="number")?v:-Infinity; } if(key==="tpm60") return (typeof row.tpm60==="number")?row.tpm60:-Infinity; if(key==="tbr") return (typeof row.tbr==="number")?row.tbr:-Infinity; if(key==="spreadPct") return (typeof row.spreadPct==="number")?row.spreadPct:Infinity; if(key==="signal"){ const s=row.signal||"NEUTRAL"; return (s==="LONG"?2:(s==="NEUTRAL"?1:0)); } return 0; }
+          const arr=base.slice(); arr.sort(function(a,b){ let va=val(a,sortKey), vb=val(b,sortKey); if(typeof va==="string" || typeof vb==="string"){ va=String(va); vb=String(vb); const cmp=va.localeCompare(vb); return sortDir==="asc"? cmp : -cmp; } else { const cmpN=(va===vb)?0:(va<vb?-1:1); return sortDir==="asc"? cmpN : -cmpN; } }); return arr;
+        }, [symbols, data, sortKey, sortDir]);
+
+        function requestSort(key){ setSortKey(function(prev){ if(prev===key){ setSortDir(function(d){ return d==="asc"?"desc":"asc"; }); return prev; } setSortDir("desc"); return key; }); }
+        function headerIndicator(sk,dir,key){ if(sk!==key) return ""; return dir==="asc"?"▲":"▼"; }
+
+        // UI helpers
+        function colorByDir(val, upThr, lowThr){ if(typeof val!=="number") return ""; if(val>upThr) return "text-emerald-400"; if(val<lowThr) return "text-rose-400"; return "text-yellow-400"; }
+
+        return (
+          <div className="min-h-screen text-slate-100 p-4">
+            <div className="mx-auto max-w-7xl">
+              <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 mb-4">
+                <div>
+                  <h1 className="text-2xl font-bold">Canlı Kripto Listesi — Binance</h1>
+                  <p className="text-slate-400 text-sm">Top10 / Top50 / Custom • Satıra tıkla, teknik analiz kartı açılsın.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={()=>applyMode("TOP10")} className={`px-3 py-2 rounded-lg text-sm border ${mode==="TOP10"?"bg-emerald-600 border-emerald-500":"bg-slate-800 border-slate-700 hover:bg-slate-700"}`}>Top 10</button>
+                  <button onClick={()=>applyMode("TOP50")} className={`px-3 py-2 rounded-lg text-sm border ${mode==="TOP50"?"bg-emerald-600 border-emerald-500":"bg-slate-800 border-slate-700 hover:bg-slate-700"}`}>Top 50</button>
+                  <button onClick={()=>applyMode("CUSTOM")} className={`px-3 py-2 rounded-lg text-sm border ${mode==="CUSTOM"?"bg-emerald-600 border-emerald-500":"bg-slate-800 border-slate-700 hover:bg-slate-700"}`}>Custom</button>
+                </div>
+              </header>
+
+              <div className="mb-3 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">Timeframe:</span>
+                  <select value={tf} onChange={e=>setTf(e.target.value)} className="px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-xs">
+                    <option value="1H">1 saat</option>
+                    <option value="4H">4 saat</option>
+                    <option value="1D">1 gün</option>
+                    <option value="1W">1 hafta</option>
+                    <option value="1m">1 dakika</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">Taker Buy:</span>
+                  <select value={tbMode} onChange={e=>setTbMode(e.target.value)} className="px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-xs">
+                    <option value="QUOTE">Quote % (USDT)</option>
+                    <option value="BASE">Base % (Coin)</option>
+                  </select>
+                  <span className="text-xs text-slate-400 ml-2">Eşikler:</span>
+                  <label className="text-xs text-slate-400">Üst</label>
+                  <input type="number" step="0.01" min="0.5" max="0.9" value={tbUpper} onChange={e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)) setTbUpper(v); }} className="w-16 px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-xs" />
+                  <label className="text-xs text-slate-400">Alt</label>
+                  <input type="number" step="0.01" min="0.1" max="0.5" value={tbLower} onChange={e=>{ const v=parseFloat(e.target.value); if(!isNaN(v)) setTbLower(v); }} className="w-16 px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-xs" />
+                  <span className="text-xs text-slate-400 ml-2">RVOL eşik:</span>
+                  <select value={rvolThresh} onChange={e=>setRvolThresh(parseFloat(e.target.value))} className="px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-xs">
+                    <option value="1.2">1.2</option>
+                    <option value="1.5">1.5</option>
+                    <option value="2.0">2.0</option>
+                  </select>
+                </div>
+              </div>
+
+              {mode==="CUSTOM" && (
+                <div className="mb-4 bg-slate-900/60 border border-slate-800 rounded-xl p-3">
+                  <label className="block text-sm text-slate-300 mb-1">Custom semboller (virgül/boşluk ile):</label>
+                  <div className="flex gap-2">
+                    <input value={customInput} onChange={e=>setCustomInput(e.target.value)} placeholder="BTC, ETH, SOL..." className="flex-1 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700" />
+                    <button onClick={addCustomSymbols} className="px-3 py-2 rounded-lg bg-emerald-600 border border-emerald-500">Ekle</button>
+                  </div>
+                </div>
+              )}
+
+              <div className="overflow-auto rounded-xl border border-slate-800">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-900/60 text-slate-300">
+                    <tr>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("symbol")} className="flex items-center gap-1 hover:underline">Sembol <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"symbol")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("price")} className="flex items-center gap-1 hover:underline">Fiyat <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"price")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("changePct24h")} className="flex items-center gap-1 hover:underline">24s % <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"changePct24h")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("rsi")} className="flex items-center gap-1 hover:underline">RSI <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"rsi")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("volume24h")} className="flex items-center gap-1 hover:underline">Hacim (24s) <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"volume24h")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("tpm60")} className="flex items-center gap-1 hover:underline">Yoğunluk (60s) <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"tpm60")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("tbr")} className="flex items-center gap-1 hover:underline">Taker Buy % (TF — {tbMode==="QUOTE"?"Q":"B"}) <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"tbr")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("spreadPct")} className="flex items-center gap-1 hover:underline">Spread <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"spreadPct")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("signal")} className="flex items-center gap-1 hover:underline">Sinyal <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"signal")}</span></button></th>
+                      <th className="px-3 py-2">Aç</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {rows.map(function(row){ const isOpen = expanded===row.symbol; const ch=row.changePct24h; const chCls = (typeof ch==="number"? (ch>0?"text-emerald-400": (ch<0?"text-rose-400":"text-yellow-400")) : ""); const sig=row.signal||"NEUTRAL"; const sigCls = sig==="LONG"?"text-emerald-300 border-emerald-500/40 bg-emerald-500/10": sig==="SHORT"?"text-rose-300 border-rose-500/40 bg-rose-500/10":"text-yellow-300 border-yellow-500/40 bg-yellow-500/10"; const tbrCls=colorByDir(row.tbr, tbUpper, tbLower);
+                      return (
+                        <React.Fragment key={row.symbol}>
+                          <tr className="hover:bg-slate-900/40">
+                            <td className="px-3 py-2 font-medium">{row.symbol}</td>
+                            <td className="px-3 py-2">{row.price!=null? num(row.price,6):"-"}</td>
+                            <td className={`px-3 py-2 ${chCls}`}>{typeof ch==="number"? ch.toFixed(2)+"%":"-"}</td>
+                            <td className="px-3 py-2">{row.rsi!=null? row.rsi.toFixed(1):"-"}</td>
+                            <td className="px-3 py-2">{row.qVol!=null? num(row.qVol,0):"-"}</td>
+                            <td className="px-3 py-2">{row.tpm60!=null? row.tpm60:"-"}</td>
+                            <td className={`px-3 py-2 ${tbrCls}`}>{typeof row.tbr==="number"? (row.tbr*100).toFixed(1)+"%":"-"}</td>
+                            <td className="px-3 py-2">{row.spreadPct!=null? row.spreadPct.toFixed(3)+"%":"-"}</td>
+                            <td className="px-3 py-2"><span className={`px-2 py-1 rounded-md border ${sigCls}`}>{sig}</span></td>
+                            <td className="px-3 py-2 text-right"><button onClick={()=> setExpanded(isOpen? null: row.symbol)} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-800">{isOpen?"▲":"▼"}</button></td>
+                          </tr>
+                          {isOpen && (
+                            <tr>
+                              <td colSpan="10" className="p-3 bg-slate-950">
+                                <div className="grid sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-4 gap-4 w-full max-w-none items-stretch content-start">
+                                  {/* Göstergeler */}
+                                  <div className={`rounded-2xl bg-slate-900/70 border border-slate-800 ${sig==="LONG"?"ring-1 ring-emerald-500/40": sig==="SHORT"?"ring-1 ring-rose-500/40":"ring-1 ring-yellow-500/30"}`}>
+                                    <div className="px-3 py-2 border-b border-slate-800 rounded-t-2xl flex items-center justify-between">
+                                      <h3 className="font-semibold">Göstergeler</h3>
+                                      <span className={`text-xs px-2 py-1 rounded-md border ${sig==="LONG"?"text-emerald-300 border-emerald-500/40 bg-emerald-500/10": sig==="SHORT"?"text-rose-300 border-rose-500/40 bg-rose-500/10":"text-yellow-300 border-yellow-500/40 bg-yellow-500/10"}`}>{sig}</span>
+                                    </div>
+                                    <div className="p-3 grid grid-cols-2 lg:grid-cols-3 gap-2 items-stretch">
+                                      <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between">
+                                        <div className="text-[11px] text-slate-400">RSI(14)</div>
+                                        <div className={`text-sm font-semibold ${colorByDir(row.rsi, 60, 40)}`}>{row.rsi!=null? row.rsi.toFixed(1):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.rsi!=null ? (row.rsi>70?"aşırı alım": row.rsi<30?"aşırı satım": row.rsi>55?"alıcı baskısı": row.rsi<45?"satıcı baskısı":"nötr") : "-"}</div>
+                                      </div>
+                                      <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between">
+                                        <div className="text-[11px] text-slate-400">MACD</div>
+                                        <div className={`text-sm font-semibold ${row.macdHist!=null? (row.macdHist>0?"text-emerald-400": row.macdHist<0?"text-rose-400":"text-yellow-400"):""}`}>{row.macd!=null? row.macd.toFixed(4):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.macdHist!=null? (row.macdHist>0?"momentum ↑":"momentum ↓"):"-"}</div>
+                                      </div>
+                                      <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between">
+                                        <div className="text-[11px] text-slate-400">Taker Buy (TF — {tbMode==="QUOTE"?"Q":"B"})</div>
+                                        <div className={`text-sm font-semibold ${colorByDir(row.tbr, tbUpper, tbLower)}`}>{typeof row.tbr==="number"? (row.tbr*100).toFixed(1)+"%":"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{typeof row.tbr==="number"? (row.tbr>tbUpper?"alıcı baskısı": row.tbr<tbLower?"satıcı baskısı":"denge"):"-"}</div>
+                                      </div>
+                                      <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between">
+                                        <div className="text-[11px] text-slate-400">RVOL*</div>
+                                        <div className={`text-sm font-semibold ${row.rvol!=null? (row.rvol>=rvolThresh?"text-emerald-400":"text-yellow-400"):""}`}>{row.rvol!=null? row.rvol.toFixed(2):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.rvol!=null? (row.rvol>=rvolThresh?"yüksek anomali":"ortalama/altı") : "-"}</div>
+                                      </div>
+                                      <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between">
+                                        <div className="text-[11px] text-slate-400">Trend</div>
+                                        <div className={`text-sm font-semibold ${row.ema20!=null&&row.ema50!=null? (row.ema20>row.ema50?"text-emerald-400": row.ema20<row.ema50?"text-rose-400":"text-yellow-400"):""}`}>{row.ema20!=null&&row.ema50!=null? (row.ema20>row.ema50?"yukarı":"aşağı") : "-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">EMA20 / EMA50</div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Destek / Direnç */}
+                                  <div className={`rounded-2xl bg-slate-900/70 border border-slate-800 ${sig==="LONG"?"ring-1 ring-emerald-500/40": sig==="SHORT"?"ring-1 ring-rose-500/40":"ring-1 ring-yellow-500/30"}`}>
+                                    <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between rounded-t-2xl">
+                                      <h3 className="font-semibold">Destek / Direnç</h3>
+                                      <span className={`text-xs px-2 py-1 rounded-md border ${sig==="LONG"?"text-emerald-300 border-emerald-500/40 bg-emerald-500/10": sig==="SHORT"?"text-rose-300 border-rose-500/40 bg-rose-500/10":"text-yellow-300 border-yellow-500/40 bg-yellow-500/10"}`}>{sig}</span>
+                                    </div>
+                                    <div className="p-3 space-y-3">
+                                      {(()=>{ const priceNow=row.price; const ohlc=(ohlcRef.current && ohlcRef.current[row.symbol])? ohlcRef.current[row.symbol] : null; const swings=computeSwingLevels(ohlc,3,3,300); const sr=nearestSR(priceNow, swings.highs, swings.lows); const z=srZones(sr.support, sr.resistance, row.atr, priceNow); const nearSup=sr.support!=null?sr.support:null; const nearRes=sr.resistance!=null?sr.resistance:null; const supZone=z.supZone, resZone=z.resZone; const lastClosed=(ohlc&&ohlc.c&&ohlc.c.length>1)? ohlc.c[ohlc.c.length-2]:null; const supBroken = (supZone&&lastClosed!=null)? (lastClosed < supZone[0]) : ((nearSup!=null&&lastClosed!=null)? (lastClosed<nearSup):false); const resCleared=(resZone&&lastClosed!=null)? (lastClosed > resZone[1]) : ((nearRes!=null&&lastClosed!=null)? (lastClosed>nearRes):false);
+                                        // touch counts & break magnitude (ATR)
+                                        const tol=(row.atr&&row.atr>0)?(row.atr*0.25):(priceNow?priceNow*0.001:0);
+                                        let touchSup=0, touchRes=0; if(swings&&swings.lows&&nearSup!=null){ for(let ii=0;ii<swings.lows.length;ii++){ const lv=swings.lows[ii]; if(Math.abs(lv-nearSup)<=tol) touchSup++; } } if(swings&&swings.highs&&nearRes!=null){ for(let kk=0;kk<swings.highs.length;kk++){ const hv=swings.highs[kk]; if(Math.abs(hv-nearRes)<=tol) touchRes++; } }
+                                        let brkSupATR=null, brkResATR=null; if(supBroken && row.atr && row.atr>0){ const supEdge=supZone?supZone[0]:nearSup; if(typeof supEdge==="number") brkSupATR=(supEdge-lastClosed)/row.atr; } if(resCleared && row.atr && row.atr>0){ const resEdge=resZone?resZone[1]:nearRes; if(typeof resEdge==="number") brkResATR=(lastClosed-resEdge)/row.atr; }
+                                        return (
+                                          <>
+                                            <div className="grid grid-cols-2 gap-2 items-stretch">
+                                              <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[112px] flex flex-col justify-between">
+                                                <div className="text-[11px] text-slate-400">Destek (yakın)</div>
+                                                <div className="text-sm font-semibold text-rose-300">{nearSup!=null? num(nearSup,6):"-"}</div>
+                                                <div className="text-[11px] text-slate-400 mt-0.5">{supZone?`Bölge: [${num(supZone[0],6)} ~ ${num(supZone[1],6)}]`:"-"}</div>
+                                                {supBroken ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-rose-500/40 text-rose-300 bg-rose-500/10">destek kırıldı (RVOL≥{rvolThresh})</span> : <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10">kırılım — zayıf hacim</span>) : (nearSup!=null && lastClosed!=null ? <span className="mt-1 inline-block text-[11px] text-slate-400">üstünde</span> : null)}
+                                              </div>
+                                              <div className="rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[112px] flex flex-col justify-between">
+                                                <div className="text-[11px] text-slate-400">Direnç (yakın)</div>
+                                                <div className="text-sm font-semibold text-emerald-300">{nearRes!=null? num(nearRes,6):"-"}</div>
+                                                <div className="text-[11px] text-slate-400 mt-0.5">{resZone?`Bölge: [${num(resZone[0],6)} ~ ${num(resZone[1],6)}]`:"-"}</div>
+                                                {resCleared ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-emerald-500/40 text-emerald-300 bg-emerald-500/10">direnç aşıldı (RVOL≥{rvolThresh})</span> : <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10">kırılım — zayıf hacim</span>) : (nearRes!=null && lastClosed!=null ? <span className="mt-1 inline-block text-[11px] text-slate-400">altında</span> : null)}
+                                              </div>
+                                            </div>
+                                            <div className="grid md:grid-cols-3 gap-3 text-[11px] text-slate-300 items-stretch mt-2">
+                                              <div className="rounded-lg bg-slate-800/50 border border-slate-700 p-2 min-h-[92px] flex flex-col justify-between">
+                                                <div className="text-slate-400 mb-1">Durum (kapanışa göre)</div>
+                                                <div>{lastClosed!=null?`Son kapanış: ${num(lastClosed,6)}`:"-"}{resCleared?" • direncin ÜZERİNDE":(nearRes!=null?" • direncin ALTINDA":"")} {(resCleared&&nearSup!=null)?" • ":""}{supBroken?" • desteğin ALTINDA":(nearSup!=null?" • desteğin ÜSTÜNDE":"")}</div>
+                                              </div>
+                                              <div className="rounded-lg bg-slate-800/50 border border-slate-700 p-2 min-h-[92px] flex flex-col justify-between">
+                                                <div className="text-slate-400 mb-1">Mesafe & Şiddet</div>
+                                                <div>{(priceNow!=null&&nearSup!=null)?`Destek mesafe: ${((priceNow-nearSup)/priceNow*100).toFixed(2)}%`:"-"}{(priceNow!=null&&nearRes!=null)?` • Direnç mesafe: ${((nearRes-priceNow)/priceNow*100).toFixed(2)}%`:""}{(brkSupATR!=null&&brkSupATR>0)?` • Destek kırılma şiddeti: ${brkSupATR.toFixed(2)} ATR`:""}{(brkResATR!=null&&brkResATR>0)?` • Direnç aşılma şiddeti: ${brkResATR.toFixed(2)} ATR`:""}</div>
+                                              </div>
+                                              <div className="rounded-lg bg-slate-800/50 border border-slate-700 p-2 min-h-[92px] flex flex-col justify-between">
+                                                <div className="text-slate-400 mb-1">Kanıtlar</div>
+                                                <div>{typeof row.rvol==="number"?`RVOL*: ${row.rvol.toFixed(2)}`:"RVOL*: -"}{` • Dokunma — Destek: ${touchSup||0}, Direnç: ${touchRes||0}`}</div>
+                                              </div>
+                                            </div>
+                                            <div className="text-[11px] text-slate-400 mt-2"><b>Metodoloji:</b> Swing(3,3) seviye; ATR tabanlı ±bölge; onay = kapanışın bölge dışına çıkması; şiddet = mesafe/ATR. Yüksek RVOL kırılım doğrulamasını güçlendirir.</div>
+                                          </>
+                                        ); })()}
+                                    </div>
+                                  </div>
+
+                                  {/* Bilgi */}
+                                  <div className="rounded-2xl bg-slate-900/70 border border-slate-800">
+                                    <div className="px-3 py-2 border-b border-slate-800 rounded-t-2xl"><h3 className="font-semibold">Bilgi</h3></div>
+                                    <div className="p-3 text-slate-300 text-sm">
+                                      {row.commentary||"-"}
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      ); })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.render(<CryptoLiveList />, document.getElementById('root'));
+    </script>
+  </body>
 </html>
