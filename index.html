@@ -50,7 +50,7 @@
       function buildCommentary(sym, price, rsi, macd, hist, ema20, ema50, ema200, changePct24h){ const parts=[]; parts.push(`${sym} fiyat ${price?num(price,6):"-"} USDT.`); if(typeof changePct24h==="number"){ const dir=changePct24h>=0?"artı":"eksi"; parts.push(`24s değişim ${changePct24h.toFixed(2)}% (${dir}).`);} if(rsi!=null){ const zone = rsi>70?"aşırı alım": rsi<30?"aşırı satım": rsi>55?"pozitif": rsi<45?"negatif":"nötr"; parts.push(`RSI ${rsi.toFixed(1)} (${zone}).`);} if(macd!=null && hist!=null) parts.push(`MACD ${macd.toFixed(4)}, hist ${hist.toFixed(4)}.`); if(ema20!=null && ema50!=null) parts.push(`EMA20 ${num(ema20,6)}, EMA50 ${num(ema50,6)} ${ema20>ema50?"(trend yukarı)": ema20<ema50?"(trend aşağı)":"(kesişim)"}.`); if(ema200!=null) parts.push(`EMA200 ${num(ema200,6)}.`); const sig=deriveSignal(rsi,hist,ema20,ema50); parts.push(`Sinyal: ${sig}.`); return parts.join(" "); }
 
       // ---------------- API helpers ----------------
-      async function loadTopByVolume(n){ const url=`${REST_BASE}/api/v3/ticker/24hr`; const r=await fetch(url); const all=await r.json(); const arr=(Array.isArray(all)?all:[]) .filter(x=> typeof x?.symbol==="string" && x.symbol.endsWith("USDT") && !x.symbol.includes("UPUSDT") && !x.symbol.includes("DOWNUSDT")) .map(x=>({ symbol:x.symbol, qv:Number(x.quoteVolume)||0 })) .sort((a,b)=>b.qv-a.qv) .slice(0,n) .map(x=>x.symbol); return arr; }
+      async function loadTopByVolume(n){ const url=`${REST_BASE}/api/v3/ticker/24hr`; const r=await fetch(url); const all=await r.json(); const arr=(Array.isArray(all)?all:[]) .filter(x=> x && typeof x.symbol==="string" && x.symbol.endsWith("USDT") && !x.symbol.includes("UPUSDT") && !x.symbol.includes("DOWNUSDT")) .map(x=>({ symbol:x.symbol, qv:Number(x.quoteVolume)||0 })) .sort((a,b)=>b.qv-a.qv) .slice(0,n) .map(x=>x.symbol); return arr; }
 
       function CryptoLiveList(){
         const [mode, setMode] = useState("TOP10");
@@ -406,7 +406,8 @@
         );
       }
 
-      ReactDOM.render(<CryptoLiveList />, document.getElementById('root'));
+      function ErrorBoundary(props){ const [err,setErr]=React.useState(null); if(err){ return (<div className="p-4 text-sm text-rose-300">Hata: {String(err.message||err)}</div>); } try { return props.children; } catch(e){ setErr(e); return null; } }
+      ReactDOM.render(<ErrorBoundary><CryptoLiveList /></ErrorBoundary>, document.getElementById('root'));
     </script>
   </body>
 </html>
