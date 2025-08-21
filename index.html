@@ -80,6 +80,12 @@
         // (Re)connect on symbols/tf change
         useEffect(()=>{ if(!symbols.length) return; connectWS(symbols); return ()=>cleanupWS(); }, [symbols.join(","), tf]);
 
+        // Seed OHLC/TA as soon as list or timeframe changes (ensures cards show data immediately)
+        useEffect(()=>{ if(!symbols.length) return; symbols.forEach(function(s){ try{ ensureHistory(s); }catch(e){} }); }, [symbols.join(","), tf]);
+
+        // Also seed when a row is expanded (lazy, per-symbol)
+        useEffect(()=>{ if(expanded){ try{ ensureHistory(expanded); }catch(e){} } }, [expanded, tf]);
+
         function cleanupWS(){ if(wsRef.current){ try{ wsRef.current.close(); }catch(e){} } wsRef.current=null; }
 
         function connectWS(list){ cleanupWS(); reconnectRef.current.tries=0; if(!list||!list.length) return; const kint=tfToBinance(tf); const streams=list.map(s=>`${s.toLowerCase()}@miniTicker/${s.toLowerCase()}@kline_${kint}/${s.toLowerCase()}@bookTicker/${s.toLowerCase()}@aggTrade`).join("/"); const url=`${WSS_BASE}/stream?streams=${streams}`; const ws=new WebSocket(url); wsRef.current=ws; ws.onopen=function(){ reconnectRef.current.tries=0; }; ws.onmessage=onWSEvent; ws.onerror=function(){}; ws.onclose=function(ev){ const code=(ev&&ev.code)||1006; const retry=reconnectRef.current.tries<reconnectRef.current.max && code!==1008; if(!retry) return; reconnectRef.current.tries++; const delay=Math.min(15000, 1000*Math.pow(2,reconnectRef.current.tries)); setTimeout(()=>{ if(symbols.length) connectWS(symbols); }, delay); };
