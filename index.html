@@ -31,12 +31,15 @@
         function loadLib(i){
           if(i>=libs.length){
             try {
-              if(window.Babel && typeof window.Babel.transformScriptTags === 'function'){
-                window.Babel.transformScriptTags();
-              } else {
-                say('Babel yüklenemedi: transform çalıştırılamıyor.');
-              }
-            } catch(e){ say('Babel çalıştırma hatası: '+(e && e.message || e)); }
+              if(!window.Babel){ say('Babel yüklenemedi.'); return; }
+              var el = document.getElementById('app-script');
+              if(!el){ say('Uygulama betiği bulunamadı (app-script).'); return; }
+              var src = el.textContent || el.innerText || '';
+              try {
+                var out = window.Babel.transform(src, { presets: ['react'] }).code;
+                (0, eval)(out);
+              } catch(e){ say('Babel derleme/çalıştırma hatası: '+((e&&e.message)||e)); }
+            } catch(e){ say('Çalıştırma hatası: '+((e&&e.message)||e)); }
             return;
           }
           var srv = 0;
@@ -74,7 +77,7 @@
       })();
     </script>
 
-    <script type="text/babel" data-presets="react">
+    <script id="app-script" type="text/babel" data-presets="react">
       const { useEffect, useMemo, useRef, useState } = React;
       const REST_BASE = "https://api.binance.com";
       const WSS_BASE  = "wss://stream.binance.com:9443";
