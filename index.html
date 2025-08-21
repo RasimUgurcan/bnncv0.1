@@ -406,8 +406,9 @@
         );
       }
 
-      function ErrorBoundary(props){ const [err,setErr]=React.useState(null); if(err){ return (<div className="p-4 text-sm text-rose-300">Hata: {String(err.message||err)}</div>); } try { return props.children; } catch(e){ setErr(e); return null; } }
-      ReactDOM.render(<ErrorBoundary><CryptoLiveList /></ErrorBoundary>, document.getElementById('root'));
+      class ErrorBoundary extends React.Component { constructor(props){ super(props); this.state={ error:null }; } static getDerivedStateFromError(error){ return { error }; } componentDidCatch(error, info){ console.error('ErrorBoundary caught:', error, info); } render(){ if(this.state.error){ return (<div className="p-4 text-sm text-rose-300">Hata: {String(this.state.error && this.state.error.message || this.state.error)}</div>); } return this.props.children; } }
+      var mount = document.getElementById('root');
+      if(mount){ ReactDOM.render(<ErrorBoundary><CryptoLiveList /></ErrorBoundary>, mount); } else { document.body.innerHTML = '<div style="padding:12px;color:#fca5a5">Hata: #root bulunamadı</div>'; }(<ErrorBoundary><CryptoLiveList /></ErrorBoundary>, document.getElementById('root'));
     </script>
   </body>
 </html>
