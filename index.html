@@ -306,7 +306,8 @@
                                       <span className={`text-xs px-2 py-1 rounded-md border ${sig==="LONG"?"text-emerald-300 border-emerald-500/40 bg-emerald-500/10": sig==="SHORT"?"text-rose-300 border-rose-500/40 bg-rose-500/10":"text-yellow-300 border-yellow-500/40 bg-yellow-500/10"}`}>{sig}</span>
                                     </div>
                                     <div className="p-3 space-y-3">
-                                      {(()=>{ const priceNow=row.price; const ohlc=(ohlcRef.current && ohlcRef.current[row.symbol])? ohlcRef.current[row.symbol] : null; const swings=computeSwingLevels(ohlc,3,3,300); const sr=nearestSR(priceNow, swings.highs, swings.lows); const z=srZones(sr.support, sr.resistance, row.atr, priceNow); const nearSup=sr.support!=null?sr.support:null; const nearRes=sr.resistance!=null?sr.resistance:null; const supZone=z.supZone, resZone=z.resZone; const lastClosed=(ohlc&&ohlc.c&&ohlc.c.length>1)? ohlc.c[ohlc.c.length-2]:null; const supBroken = (supZone&&lastClosed!=null)? (lastClosed < supZone[0]) : ((nearSup!=null&&lastClosed!=null)? (lastClosed<nearSup):false); const resCleared=(resZone&&lastClosed!=null)? (lastClosed > resZone[1]) : ((nearRes!=null&&lastClosed!=null)? (lastClosed>nearRes):false);
+                                      {(()=>{ const priceNow=row.price; const ohlc=(ohlcRef.current && ohlcRef.current[row.symbol])? ohlcRef.current[row.symbol] : null; const swings=computeSwingLevels(ohlc,3,3,300); const sr=nearestSR(priceNow, swings.highs, swings.lows); const z=srZones(sr.support, sr.resistance, row.atr, priceNow); const nearSup=sr.support!=null?sr.support:null; const nearRes=sr.resistance!=null?sr.resistance:null; const supZone=z.supZone, resZone=z.resZone; const lastClosed=(ohlc&&ohlc.c&&ohlc.c.length>1)? ohlc.c[ohlc.c.length-2]:null;
+                                        const pv = row.pivots || ((ohlc&&ohlc.h&&ohlc.l&&ohlc.c&&ohlc.h.length>1&&ohlc.l.length>1&&ohlc.c.length>1) ? computePivotsClassic(ohlc.h[ohlc.h.length-2], ohlc.l[ohlc.l.length-2], ohlc.c[ohlc.c.length-2]) : null); const supBroken = (supZone&&lastClosed!=null)? (lastClosed < supZone[0]) : ((nearSup!=null&&lastClosed!=null)? (lastClosed<nearSup):false); const resCleared=(resZone&&lastClosed!=null)? (lastClosed > resZone[1]) : ((nearRes!=null&&lastClosed!=null)? (lastClosed>nearRes):false);
                                         // touch counts & break magnitude (ATR)
                                         const tol=(row.atr&&row.atr>0)?(row.atr*0.25):(priceNow?priceNow*0.001:0);
                                         let touchSup=0, touchRes=0; if(swings&&swings.lows&&nearSup!=null){ for(let ii=0;ii<swings.lows.length;ii++){ const lv=swings.lows[ii]; if(Math.abs(lv-nearSup)<=tol) touchSup++; } } if(swings&&swings.highs&&nearRes!=null){ for(let kk=0;kk<swings.highs.length;kk++){ const hv=swings.highs[kk]; if(Math.abs(hv-nearRes)<=tol) touchRes++; } }
@@ -341,7 +342,44 @@
                                                 <div>{typeof row.rvol==="number"?`RVOL*: ${row.rvol.toFixed(2)}`:"RVOL*: -"}{` • Dokunma — Destek: ${touchSup||0}, Direnç: ${touchRes||0}`}</div>
                                               </div>
                                             </div>
-                                            <div className="text-[11px] text-slate-400 mt-2"><b>Metodoloji:</b> Swing(3,3) seviye; ATR tabanlı ±bölge; onay = kapanışın bölge dışına çıkması; şiddet = mesafe/ATR. Yüksek RVOL kırılım doğrulamasını güçlendirir.</div>
+                                            <div className=\"grid grid-cols-3 md:grid-cols-7 gap-2 items-stretch mt-2\">
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">P</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.P,6):"-"}</div>
+                                                <div className=\"text-[11px] text-slate-400 mt-0.5\">{(pv&&lastClosed!=null)?(lastClosed>pv.P?"üstünde":"altında"):"-"}</div>
+                                              </div>
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">S1</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.S1,6):"-"}</div>
+                                                {pv&&lastClosed!=null ? (lastClosed<pv.S1 ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-rose-500/40 text-rose-300 bg-rose-500/10\">S1 kırıldı (RVOL≥{rvolThresh})</span> : <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10\">S1 kırıldı — zayıf hacim</span>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">üstünde</div>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">-</div>}
+                                              </div>
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">S2</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.S2,6):"-"}</div>
+                                                {pv&&lastClosed!=null ? (lastClosed<pv.S2 ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-rose-500/40 text-rose-300 bg-rose-500/10\">S2 kırıldı (RVOL≥{rvolThresh})</span> : <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10\">S2 kırıldı — zayıf hacim</span>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">üstünde</div>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">-</div>}
+                                              </div>
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">S3</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.S3,6):"-"}</div>
+                                                {pv&&lastClosed!=null ? (lastClosed<pv.S3 ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-rose-500/40 text-rose-300 bg-rose-500/10\">S3 kırıldı (RVOL≥{rvolThresh})</span> : <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-500 bg-yellow-500/10\">S3 kırıldı — zayıf hacim</span>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">üstünde</div>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">-</div>}
+                                              </div>
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">R1</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.R1,6):"-"}</div>
+                                                {pv&&lastClosed!=null ? (lastClosed>pv.R1 ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-emerald-500/40 text-emerald-300 bg-emerald-500/10\">R1 aşıldı (RVOL≥{rvolThresh})</span> : <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10\">R1 aşıldı — zayıf hacim</span>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">altında</div>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">-</div>}
+                                              </div>
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">R2</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.R2,6):"-"}</div>
+                                                {pv&&lastClosed!=null ? (lastClosed>pv.R2 ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-emerald-500/40 text-emerald-300 bg-emerald-500/10\">R2 aşıldı (RVOL≥{rvolThresh})</span> : <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10\">R2 aşıldı — zayıf hacim</span>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">altında</div>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">-</div>}
+                                              </div>
+                                              <div className=\"rounded-lg bg-slate-800/60 border border-slate-700 px-3 py-2 min-h-[84px] flex flex-col justify-between\">
+                                                <div className=\"text-[11px] text-slate-400\">R3</div>
+                                                <div className=\"text-sm font-semibold\">{pv? num(pv.R3,6):"-"}</div>
+                                                {pv&&lastClosed!=null ? (lastClosed>pv.R3 ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-emerald-500/40 text-emerald-300 bg-emerald-500/10\">R3 aşıldı (RVOL≥{rvolThresh})</span> : <span className=\"mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10\">R3 aşıldı — zayıf hacim</span>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">altında</div>) : <div className=\"text-[11px] text-slate-400 mt-0.5\">-</div>}
+                                              </div>
+                                            </div>
+                                            <div className=\"text-[11px] text-slate-400 mt-2\"><b>Metodoloji:</b> Swing(3,3) seviye; ATR tabanlı ±bölge; onay = kapanışın bölge dışına çıkması; şiddet = mesafe/ATR. Yüksek RVOL kırılım doğrulamasını güçlendirir.</div>
                                           </>
                                         ); })()}
                                     </div>
