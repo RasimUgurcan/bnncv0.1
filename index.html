@@ -6,58 +6,9 @@
     <title>Binance Canlı Liste + TA (Tek Dosya)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React + Babel Standalone (yalnız geliştirme için) -->
-    <script>
-      // Robust CDN loader with fallbacks + explicit Babel transform
-      (function(){
-        var root = document.getElementById('root');
-        function say(msg){ if(root){ root.innerHTML = '<div style="padding:12px;color:#fca5a5;font:13px/1.5 ui-sans-serif,system-ui">'+msg+'</div>'; } }
-        var libs = [
-          { name: 'react', urls: [
-              'https://unpkg.com/react@17/umd/react.development.js',
-              'https://cdn.jsdelivr.net/npm/react@17/umd/react.development.js',
-              'https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.development.min.js'
-            ] },
-          { name: 'react-dom', urls: [
-              'https://unpkg.com/react-dom@17/umd/react-dom.development.js',
-              'https://cdn.jsdelivr.net/npm/react-dom@17/umd/react-dom.development.js',
-              'https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.development.min.js'
-            ] },
-          { name: 'babel', urls: [
-              'https://unpkg.com/@babel/standalone/babel.min.js',
-              'https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js',
-              'https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.20/babel.min.js'
-            ] }
-        ];
-        function loadLib(i){
-          if(i>=libs.length){
-            try {
-              if(!window.Babel){ say('Babel yüklenemedi.'); return; }
-              var el = document.getElementById('app-script');
-              if(!el){ say('Uygulama betiği bulunamadı (app-script).'); return; }
-              var src = el.textContent || el.innerText || '';
-              try {
-                var out = window.Babel.transform(src, { presets: ['react'] }).code;
-                (0, eval)(out);
-              } catch(e){ say('Babel derleme/çalıştırma hatası: '+((e&&e.message)||e)); }
-            } catch(e){ say('Çalıştırma hatası: '+((e&&e.message)||e)); }
-            return;
-          }
-          var srv = 0;
-          (function tryUrl(){
-            var url = libs[i].urls[srv];
-            var s = document.createElement('script');
-            s.src = url; s.async = false; s.crossOrigin = 'anonymous';
-            s.onload = function(){ loadLib(i+1); };
-            s.onerror = function(){ srv++; if(srv < libs[i].urls.length){ tryUrl(); } else { say('CDN yüklenemedi: '+libs[i].name); } };
-            document.head.appendChild(s);
-          })();
-        }
-        // Start after DOM ready to ensure inline <script type="text/babel"> is in DOM
-        if(document.readyState === 'loading'){
-          document.addEventListener('DOMContentLoaded', function(){ loadLib(0); });
-        } else { loadLib(0); }
-      })();
-    </script>
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
       html, body { background:#0b1220; }
       .ring-soft { box-shadow: 0 0 0 1px rgba(16,185,129,.25); }
