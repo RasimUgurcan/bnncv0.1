@@ -15,7 +15,18 @@
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">Yükleniyor…</div>
+
+    <!-- Fallback: React/Babel yüklenmezse ya da global hata olursa ekrana yaz -->
+    <script>
+      (function(){
+        var root = document.getElementById('root');
+        function show(msg){ if(root){ root.innerHTML = '<div style="padding:12px;color:#fca5a5;font:13px/1.5 ui-sans-serif,system-ui">'+msg+'</div>'; } }
+        window.addEventListener('error', function(e){ try{ var m = (e && (e.message || (e.error && e.error.message))) || 'Bilinmeyen hata'; show('JS Hatası: '+m); }catch(_){} });
+        // CDN/inline scriptler yüklenmediyse uyar
+        setTimeout(function(){ if(!(window.React && window.ReactDOM)) { show('Harici scriptler yüklenemedi (CDN engeli?). İnternet erişimini/HTTP sunucusunu kontrol edin.'); } }, 2500);
+      })();
+    </script>
 
     <script type="text/babel" data-presets="react">
       const { useEffect, useMemo, useRef, useState } = React;
