@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Binance Canlı Liste + TA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      html, body { background:#000; }
+      .numwrap { word-break: break-all; }
+      .card { background:rgba(17,24,39,.85); border:1px solid #1f2937; border-radius:16px; box-shadow: 0 8px 20px rgba(0,0,0,.25); }
+      .card-header { border-bottom:1px solid #1f2937; border-top-left-radius:16px; border-top-right-radius:16px; }
+      .mini { background:rgba(31,41,55,.6); border:1px solid #374151; border-radius:12px; }
+    </style>
+
+
+  </head>
+  <body class="bg-black text-slate-100">
+    <div id="root" class="min-h-screen">Yükleniyor...</div>
+
+    <script type="text/babel" data-presets="react">
+      const {useEffect,useMemo,useRef,useState} = React;
+      const REST_BASE="https://api.binance.com";
+      const WSS_BASE="wss://stream.binance.com:9443";
+
+      // ---- helpers ----
+      function uniq(a){ return Array.from(new Set(a)); }
+      function num(n,d=6){ const x=Number(n); if(isNaN(x)) return "-"; return x.toLocaleString(undefined,{maximumFractionDigits:d}); }
+      function pct(a,b){ if(!a||!b) return 0; return ((a-b)/b)*100; }
+      function toUsdtSymbol(s){ s=String(s||"").toUpperCase().replace(/\s+/g,""); if(!s.endsWith("USDT")) s+="USDT"; return s; }
+
+      function tfToBinance(tf){ return tf==="1W"?"1w":tf==="1D"?"1d":tf==="4H"?"4h":tf==="1m"?"1m":"1h"; }
+      function tfToMs(tf){ return tf==="1W"?7*24*60*60*1e3: tf==="1D"?24*60*60*1e3: tf==="4H"?4*60*60*1e3: tf==="1m"?60*1e3:60*60*1e3; }
+      function currentCandleStart(tf){ const ms=tfToMs(tf); const now=Date.now(); return Math.floor(now/ms)*ms; }
+
+      function computeEMA(values,period){ if(!values||values.length<period) return null; const k=2/(period+1); let ema=0; for(let i=0;i<period;i++) ema+=values[i]; ema/=period; for(let i=period;i<values.length;i++){ ema = values[i]*k + ema*(1-k); } return ema; }
+      function computeRSI_TV(closes,length=14){
+        if(!closes||closes.length<length+1) return null;
+        const ups=[],downs=[];
+        for(let i=1;i<closes.length;i++){ const ch=closes[i]-closes[i-1]; ups.push(ch>0?ch:0); downs.push(ch<0?-ch:0); }
+        function rma(arr,len){ if(arr.length<len) return null; let s=0; for(let i=0;i<len;i++) s+=arr[i]; let prev=s/len; for(let i=len;i<arr.length;i++){ prev=(prev*(len-1)+arr[i])/len; } return prev; }
+        const rU=rma(ups,length), rD=rma(downs,length); if(rU==null||rD==null) return null; if(rD===0) return 100; const rs=rU/rD; return 100-100/(1+rs);
+      }
+      function computeMACD(values){
+        if(!values||values.length<35) return {macd:null,signal:null,hist:null};
+        const macdSeries=[];
+        for(let i=26;i<=values.length;i++){ const s=values.slice(0,i); const e12=computeEMA(s,12), e26=computeEMA(s,26); if(e12!=null&&e26!=null) macdSeries.push(e12-e26); }
+        const macd = macdSeries.length? macdSeries[macdSeries.length-1] : null;
+        const signal = computeEMA(macdSeries,9);
+        const hist = (macd!=null && signal!=null)? macd-signal : null;
+        return {macd,signal,hist};
+      }
+      function computeATR14(ohlc){
+        if(!ohlc||!ohlc.h||!ohlc.l||!ohlc.c) return null;
+        const H=ohlc.h,L=ohlc.l,C=ohlc.c; if(C.length<15) return null;
+        const tr=[]; for(let i=1;i<C.length;i++){ const m1=H[i]-L[i], m2=Math.abs(H[i]-C[i-1]), m3=Math.abs(L[i]-C[i-1]); tr.push(Math.max(m1,m2,m3)); }
+        return computeEMA(tr,14);
+      }
+      function computePivotsClassic(h,l,c){ if(h==null||l==null||c==null) return null; const P=(h+l+c)/3; return {P,R1:2*P-l,S1:2*P-h,R2:P+(h-l),S2:P-(h-l),R3:h+2*(P-l),S3:l-2*(h-P)}; }
+      function computeBB(closes,p=20,m=2){ if(!closes||closes.length<p) return null; const arr=closes.slice(-p); const mean=arr.reduce((a,b)=>a+b,0)/p; const v=arr.reduce((s,x)=>s+(x-mean)*(x-mean),0)/p; const sd=Math.sqrt(v); return {mid:mean,upper:mean+m*sd,lower:mean-m*sd,width:sd/mean}; }
+      function computeStochKD(ohlc,period=14,sK=3,sD=3){
+        if(!ohlc||!ohlc.h||!ohlc.l||!ohlc.c) return {K:null,D:null};
+        const H=ohlc.h,L=ohlc.l,C=ohlc.c; if(C.length<period+sK+sD) return {K:null,D:null};
+        function SMA(a,len){ if(a.length<len) return null; const out=[]; for(let i=0;i<=a.length-len;i++){ let s=0; for(let j=0;j<len;j++) s+=a[i+j]; out.push(s/len); } return out; }
+        const kRaw=[]; for(let i=period-1;i<C.length;i++){ const hi=Math.max.apply(null,H.slice(i-period+1,i+1)); const lo=Math.min.apply(null,L.slice(i-period+1,i+1)); const cl=C[i]; const k=(hi===lo)?50:((cl-lo)/(hi-lo))*100; kRaw.push(k); }
+        const kS=SMA(kRaw,sK); if(!kS) return {K:null,D:null}; const dS=SMA(kS,sD); if(!dS) return {K:null,D:null}; return {K:kS[kS.length-1], D:dS[dS.length-1]};
+      }
+      function computeMFI(ohlc,period=14){
+        if(!ohlc||!ohlc.h||!ohlc.l||!ohlc.c||!ohlc.v) return null;
+        const H=ohlc.h,L=ohlc.l,C=ohlc.c,V=ohlc.v; if(C.length<period+1) return null;
+        const tp=[],pos=[],neg=[]; for(let i=0;i<C.length;i++) tp.push((H[i]+L[i]+C[i])/3);
+        for(let i=1;i<C.length;i++){ const flow=tp[i]*V[i]; if(tp[i]>tp[i-1]){ pos.push(flow); neg.push(0); } else if(tp[i]<tp[i-1]){ pos.push(0); neg.push(flow); } else { pos.push(0); neg.push(0); } }
+        function sumLast(a,len){ if(a.length<len) return null; let s=0; for(let i=a.length-len;i<a.length;i++) s+=a[i]; return s; }
+        const p=sumLast(pos,period), n=sumLast(neg,period); if(p==null||n==null) return null; if(n===0) return 100; const mr=p/n; return 100-(100/(1+mr));
+      }
+      
+      
+      function computeRVOLStrong(qSeries, nSeries){
+        if(!qSeries || qSeries.length < 21) return null;
+        function rma(a, len){
+          if(a.length < len) return null;
+          let s = 0;
+          for(let i=0;i<len;i++) s += a[i];
+          let prev = s/len;
+          for(let i=len;i<a.length;i++){ prev = (prev*(len-1) + a[i]) / len; }
+          return prev;
+        }
+        const tail = qSeries.slice(-21);
+        const base = rma(tail.slice(0,20), 20);
+        const last = tail[tail.length - 1];
+        const rq = (base && base > 0) ? (last/base) : null;
+        let rn = null;
+        if(nSeries && nSeries.length >= 21){
+          const t = nSeries.slice(-21);
+          const b = rma(t.slice(0,20), 20);
+          const ln = t[t.length - 1];
+          rn = (b && b > 0) ? (ln/b) : null;
+        }
+        if(rq == null && rn == null) return null;
+        return (rq != null && rn != null) ? Math.sqrt(rq*rn) : (rq != null ? rq : rn);
+      }
+
+      function computeSwingLevels(ohlc,left,right,lookback){
+        if(!ohlc||!ohlc.h||!ohlc.l) return {highs:[],lows:[]};
+        const H=ohlc.h,L=ohlc.l; const n=H.length; if(!n) return {highs:[],lows:[]};
+        if(typeof lookback!=="number") lookback=Math.min(300,n); const start=Math.max(0,n-lookback);
+        const highs=[],lows=[];
+        for(let i=Math.max(start,left); i<n-right; i++){
+          let isHigh=true,isLow=true;
+          for(let j=i-left;j<=i+right;j++){ if(j===i) continue; if(H[j]>=H[i]) isHigh=false; if(L[j]<=L[i]) isLow=false; if(!isHigh && !isLow) break; }
+          if(isHigh) highs.push(H[i]);
+          if(isLow) lows.push(L[i]);
+        }
+        highs.sort((a,b)=>a-b); lows.sort((a,b)=>a-b); return {highs,lows};
+      }
+      function nearestSR(price,highs,lows){ let sup=null,res=null; if(typeof price!=="number"||isNaN(price)) return {support:null,resistance:null}; for(let i=lows.length-1;i>=0;i--){ if(lows[i]<price){ sup=lows[i]; break; } } for(let k=0;k<highs.length;k++){ if(highs[k]>price){ res=highs[k]; break; } } return {support:sup,resistance:res}; }
+      function srZones(support,resistance,atr,price){ const z=(typeof atr==="number"&&atr>0)? atr*0.25 : (typeof price==="number"? price*0.001:0); return { supZone: support!=null?[support-z,support+z]:null, resZone: resistance!=null?[resistance-z,resistance+z]:null }; }
+      function deriveSignal(rsi,hist,ema20,ema50){ if(rsi==null||hist==null||ema20==null||ema50==null) return "NEUTRAL"; if(rsi>=60&&hist>0&&ema20>ema50) return "LONG"; if(rsi<=40&&hist<0&&ema20<ema50) return "SHORT"; return "NEUTRAL"; }
+      function buildCommentary(sym, price, rsi, macd, hist, ema20, ema50, ema200, chg){
+        const parts=[]; parts.push(sym+" fiyat "+(price?num(price,6):"-")+" USDT.");
+        if(typeof chg==="number"){ parts.push("24s değişim "+chg.toFixed(2)+"%."); }
+        if(rsi!=null){ parts.push("RSI "+rsi.toFixed(1)+"."); }
+        if(macd!=null && hist!=null) parts.push("MACD "+macd.toFixed(4)+", hist "+hist.toFixed(4)+".");
+        if(ema20!=null && ema50!=null) parts.push("EMA20 "+num(ema20,6)+", EMA50 "+num(ema50,6)+".");
+        if(ema200!=null) parts.push("EMA200 "+num(ema200,6)+".");
+        const sig=deriveSignal(rsi,hist,ema20,ema50); parts.push("Sinyal: "+sig+".");
+        return parts.join(" ");
+      }
+
+      async function loadTopByVolume(n){
+        let all=null; try{ const r=await fetch(REST_BASE+"/api/v3/ticker/24hr"); all=await r.json(); }catch(e){ try{ const r2=await fetch("https://data-api.binance.vision/api/v3/ticker/24hr"); all=await r2.json(); }catch(_){ all=[]; } }
+        return (Array.isArray(all)?all:[]).filter(x=>x && typeof x.symbol==="string" && x.symbol.endsWith("USDT") && !x.symbol.includes("UPUSDT") && !x.symbol.includes("DOWNUSDT")).map(x=>({symbol:x.symbol,qv:Number(x.quoteVolume)||0})).sort((a,b)=>b.qv-a.qv).slice(0,n).map(x=>x.symbol);
+      }
+
+      
+      /* ===== Advanced Indicators: ADX/DMI, CCI, OBV, VWAP ===== */
+      function computeADX_DMI(ohlc, period){
+        period = period || 14;
+        if(!ohlc || !ohlc.h || !ohlc.l || !ohlc.c) return { adx:null, plusDI:null, minusDI:null };
+        var H = ohlc.h, L = ohlc.l, C = ohlc.c;
+        if(C.length < period + 2) return { adx:null, plusDI:null, minusDI:null };
+        function rma(arr, len){
+          if(arr.length < len) return null;
+          var s = 0; for(var i=0;i<len;i++) s += arr[i];
+          var prev = s/len;
+          for(i=len;i<arr.length;i++){ prev = (prev*(len-1) + arr[i]) / len; }
+          return prev;
+        }
+        var TR=[], plusDM=[], minusDM=[];
+        for(var i=1;i<C.length;i++){
+          var up = H[i] - H[i-1];
+          var dn = L[i-1] - L[i];
+          plusDM.push((up > dn && up > 0) ? up : 0);
+          minusDM.push((dn > up && dn > 0) ? dn : 0);
+          var tr = Math.max(H[i]-L[i], Math.abs(H[i]-C[i-1]), Math.abs(L[i]-C[i-1]));
+          TR.push(tr);
+        }
+        var tr14 = rma(TR, period);
+        var p14  = rma(plusDM, period);
+        var m14  = rma(minusDM, period);
+        if(tr14 == null || tr14 === 0) return { adx:null, plusDI:null, minusDI:null };
+        var plusDI = 100 * (p14 / tr14);
+        var minusDI = 100 * (m14 / tr14);
+        // Build DX series for ADX
+        var dxArr = [];
+        for(i=0;i<TR.length;i++){
+          var trR = rma(TR.slice(0,i+1), period);
+          var pR  = rma(plusDM.slice(0,i+1), period);
+          var mR  = rma(minusDM.slice(0,i+1), period);
+          if(trR && pR != null && mR != null && trR !== 0){
+            var pdi = 100 * (pR / trR);
+            var mdi = 100 * (mR / trR);
+            var dx  = 100 * Math.abs(pdi - mdi) / Math.max(pdi + mdi, 1e-9);
+            dxArr.push(dx);
+          }
+        }
+        var adx = rma(dxArr, period);
+        return { adx: (adx!=null? adx : null), plusDI: plusDI, minusDI: minusDI };
+      }
+
+      function computeCCI(ohlc, period){
+        period = period || 20;
+        if(!ohlc || !ohlc.h || !ohlc.l || !ohlc.c) return null;
+        var H=ohlc.h, L=ohlc.l, C=ohlc.c;
+        if(C.length < period) return null;
+        var tp = []; for(var i=0;i<C.length;i++) tp.push((H[i]+L[i]+C[i])/3);
+        var arr = tp.slice(-period);
+        var sma = 0; for(i=0;i<period;i++) sma += arr[i]; sma /= period;
+        var md = 0; for(i=0;i<period;i++) md += Math.abs(arr[i] - sma); md /= period;
+        if(md === 0) return 0;
+        return (tp[tp.length-1] - sma) / (0.015 * md);
+      }
+
+      function computeOBV(ohlc){
+        if(!ohlc || !ohlc.c || !ohlc.v) return { obv:null, slope:null };
+        var C=ohlc.c, V=ohlc.v;
+        if(C.length < 3) return { obv:null, slope:null };
+        var obv=0;
+        for(var i=1;i<C.length;i++){
+          if(C[i] > C[i-1]) obv += V[i];
+          else if(C[i] < C[i-1]) obv -= V[i];
+        }
+        var w = 20, sum=0, obv2=0;
+        if(C.length > w+1){
+          for(i=C.length-w;i<C.length;i++){
+            if(C[i] > C[i-1]) obv2 += V[i];
+            else if(C[i] < C[i-1]) obv2 -= V[i];
+          }
+        }
+        var slope = obv2 > 0 ? 1 : (obv2 < 0 ? -1 : 0);
+        return { obv: obv, slope: slope };
+      }
+
+      function computeVWAP(ohlc){
+        if(!ohlc || !ohlc.h || !ohlc.l || !ohlc.c || !ohlc.v) return null;
+        var H=ohlc.h, L=ohlc.l, C=ohlc.c, V=ohlc.v;
+        if(C.length < 2) return null;
+        var tpv = 0, vol = 0;
+        for(var i=0;i<C.length;i++){
+          var tp = (H[i]+L[i]+C[i])/3;
+          tpv += tp * V[i];
+          vol += V[i];
+        }
+        if(vol === 0) return null;
+        return tpv / vol;
+      }
+function CryptoLiveList(){
+
+        // Helper: decide tile background/border tone by direction
+        function tileTone(isBull, isBear){
+          const base = "mini px-3 py-2 h-full flex flex-col justify-between rounded-md border ";
+          return base + (isBull ? "bg-emerald-900/20 border-emerald-600"
+                                : (isBear ? "bg-rose-900/20 border-rose-600"
+                                          : "bg-yellow-900/20 border-yellow-600"));
+        }
+        const [mode,setMode]=useState("TOP10");
+        const [tf,setTf]=useState("1H");
+        const [symbols,setSymbols]=useState([]);
+        const [customInput,setCustomInput]=useState("");
+        const [data,setData]=useState({});
+        const [expanded,setExpanded]=useState(null);
+        const [tbMode,setTbMode]=useState("QUOTE");
+        const [tbUpper,setTbUpper]=useState(0.55);
+        const [tbLower,setTbLower]=useState(0.45);
+        const [rvolThresh,setRvolThresh]=useState(1.5);
+        const [sortKey,setSortKey]=useState("symbol");
+        const [sortDir,setSortDir]=useState("asc");
+
+        // external sentiment
+        const [extSent,setExtSent]=useState(null);
+        const [lunarKey,setLunarKey]=useState(()=>{ try{return localStorage.getItem("LC_API_KEY")||"fed5r858ur488h0xx9j316d05amelvc3swl2vvhlj";}catch(_){return "fed5r858ur488h0xx9j316d05amelvc3swl2vvhlj";} });
+        const [showKey,setShowKey]=useState(false);
+        const [proxyUrl,setProxyUrl]=useState(()=>{ try{return localStorage.getItem("SENTIMENT_PROXY_URL")||"";}catch(_){return "";} });
+        const [showProxy,setShowProxy]=useState(false);
+        const [lcSymbol,setLcSymbol]=useState("BTC");
+
+        useEffect(()=>{ 
+          try{ 
+            const cur = localStorage.getItem("LC_API_KEY"); 
+            if(!cur || cur.trim()===""){ 
+              localStorage.setItem("LC_API_KEY", lunarKey || "fed5r858ur488h0xx9j316d05amelvc3swl2vvhlj"); 
+              if(!lunarKey) setLunarKey("fed5r858ur488h0xx9j316d05amelvc3swl2vvhlj"); 
+            } 
+          }catch(_){}
+        },[]);
+
+        const wsRef=useRef(null);
+        const reconnectRef=useRef({tries:0,max:5}); const reconnectTimerRef=useRef(null);
+        const closesRef=useRef({});
+        const ohlcRef=useRef({});
+        const aggsRef=useRef({});
+        const cStartRef=useRef({});
+        const topCacheRef=useRef({TOP10:[],TOP50:[]});
+        const bootRef=useRef(false);
+        useEffect(()=>{ if(mode==="CUSTOM" && symbols && symbols.length){ bootRef.current=true; } }, [mode, symbols.length]);
+    
+
+        useEffect(()=>{ try{ const saved=JSON.parse(localStorage.getItem("customSymbols")||"[]"); if(saved&&saved.length){ bootRef.current=true; setMode("CUSTOM"); setSymbols(saved); } }catch(e){} },[]);
+
+        useEffect(()=>{ 
+          let cancelled=false;
+          (async()=>{ 
+            if(bootRef.current || mode==="CUSTOM" || (symbols&&symbols.length)) return;
+            try{
+              const list = await loadTopByVolume(10);
+              if(cancelled) return;
+              if(bootRef.current || mode==="CUSTOM" || (symbols&&symbols.length)) return;
+              if(!arraysEqual(symbols, list)) setSymbols(list);
+              topCacheRef.current.TOP10=list;
+            }catch(_){}
+          })();
+          return ()=>{ cancelled=true; };
+        }, [mode, symbols.length]);;
+        useEffect(()=>{ if(!symbols.length) return; connectWS(symbols); return ()=>cleanupWS(); },[symbols.join(","),tf]);
+        useEffect(()=>{ if(!symbols.length) return; symbols.forEach(s=>ensureHistory(s)); },[symbols.join(","),tf]);
+        useEffect(()=>{ if(expanded) ensureHistory(expanded); },[expanded,tf]);
+
+        // External sentiment: CoinGecko primary -> Alternative.me fallback -> LunarCrush (en sonda) + Proxy-first
+        useEffect(()=>{
+          let cancelled=false;
+          function cgId(sym){
+            sym = String(sym||"BTC").toUpperCase();
+            if(sym==="BTC") return "bitcoin";
+            if(sym==="ETH") return "ethereum";
+            if(sym==="BNB") return "binancecoin";
+            return "bitcoin";
+          }
+          async function tryProxy(){
+            try{
+              if(!proxyUrl) return false;
+              const url = proxyUrl + "?provider=coingecko&symbol=" + encodeURIComponent(lcSymbol);
+              const r = await fetch(url);
+              if(!r.ok) throw new Error("http-"+r.status);
+              const j = await r.json();
+              if(j && typeof j.value==="number" && j.classification){
+                if(!cancelled) setExtSent({ value:j.value, classification:j.classification, updatedAt:j.updatedAt||Date.now(), source:j.source||"proxy" });
+                return true;
+              }
+              return false;
+            }catch(e){ return false; }
+          }
+          async function tryCoinGecko(){
+            try{
+              const id = cgId(lcSymbol);
+              const url = "https://api.coingecko.com/api/v3/coins/"+encodeURIComponent(id)+"?localization=false&tickers=false&market_data=false&community_data=true&developer_data=false&sparkline=false";
+              const r = await fetch(url);
+              if(!r.ok) throw new Error("http-"+r.status);
+              const j = await r.json();
+              const up = typeof j.sentiment_votes_up_percentage === "number" ? j.sentiment_votes_up_percentage : null;
+              const down = typeof j.sentiment_votes_down_percentage === "number" ? j.sentiment_votes_down_percentage : null;
+              if(up==null && down==null) throw new Error("no-sentiment");
+              const val = up!=null ? up : (down!=null ? (100 - down) : null);
+              if(typeof val === "number" && !cancelled){
+                const cls = val>=60 ? "Greed" : (val<=40 ? "Fear" : "Neutral");
+                setExtSent({ value: val, classification: cls, updatedAt: Date.now(), source: "coingecko" });
+                return true;
+              }
+              return false;
+            }catch(e){ return false; }
+          }
+          async function tryAlt(){
+            try{
+              const r=await fetch("https://api.alternative.me/fng/?limit=1&format=json");
+              if(!r.ok) throw new Error("http-"+r.status);
+              const j=await r.json();
+              const d = (j && j.data && j.data[0]) ? j.data[0] : null;
+              if(d && !cancelled){
+                setExtSent({ value: Number(d.value), classification: String(d.value_classification||""), updatedAt: d.timestamp ? Number(d.timestamp)*1000 : Date.now(), source:"alternative.me" });
+                return true;
+              }
+              return false;
+            }catch(e){ return false; }
+          }
+          async function tryLunarV2(){
+            try{
+              if(!lunarKey) throw new Error("no-key");
+              const url = "https://api.lunarcrush.com/v2?data=assets&symbol="+encodeURIComponent(lcSymbol)+"&key="+encodeURIComponent(lunarKey);
+              const r = await fetch(url);
+              if(!r.ok) throw new Error("http-"+r.status);
+              const j = await r.json();
+              let obj = null;
+              if(j && Array.isArray(j.data) && j.data.length) obj = j.data[0];
+              if(!obj) return false;
+              let val = null;
+              if(typeof obj.galaxy_score === "number") val = obj.galaxy_score;
+              else if(typeof obj.average_sentiment === "number") val = obj.average_sentiment*100;
+              else if(typeof obj.sentiment === "number") val = obj.sentiment*100;
+              if(typeof val === "number" && !cancelled){
+                const cls = val>=60 ? "Greed" : (val<=40 ? "Fear" : "Neutral");
+                setExtSent({ value: val, classification: cls, updatedAt: Date.now(), source: "lunarcrush-v2" });
+                return true;
+              }
+              return false;
+            }catch(e){ return false; }
+          }
+          (async()=>{
+            let ok = await tryProxy();
+            if(!ok) ok = await tryCoinGecko();
+            if(!ok) ok = await tryAlt();
+            if(!ok) ok = await tryLunarV2();
+            if(!ok && !cancelled) setExtSent(s => s || { error:true, source:"sentiment-unavailable" });
+          })();
+          const id=setInterval(async()=>{
+            let ok = await tryProxy();
+            if(!ok) ok = await tryCoinGecko();
+            if(!ok) ok = await tryAlt();
+            if(!ok) ok = await tryLunarV2();
+          }, 5*60*1000);
+          return ()=>{ cancelled=true; clearInterval(id); };
+        },[lunarKey,lcSymbol,proxyUrl]);
+
+        function cleanupWS(){
+          if(wsRef.current){
+            try{
+              if(Array.isArray(wsRef.current)){
+                wsRef.current.forEach(ws=>{ try{ ws.close(); }catch(_){ } });
+              }else{
+                wsRef.current.close();
+              }
+            }catch(_){}
+          }
+          wsRef.current=null;
+          if(reconnectTimerRef && reconnectTimerRef.current){
+            try{ clearTimeout(reconnectTimerRef.current); }catch(_){}
+            reconnectTimerRef.current=null;
+          }
+        }
+        
+                function median(arr){
+          if(!arr||!arr.length) return null;
+          const a = arr.slice().sort((x,y)=>x-y);
+          const m = Math.floor(a.length/2);
+          return (a.length%2)? a[m] : (a[m-1]+a[m])/2;
+        }
+        async function ensureOrderBook(sym){
+          try{
+            const url = REST_BASE + "/api/v3/depth?symbol=" + sym + "&limit=50";
+            const r = await fetch(url); const ob = await r.json();
+            const bids = Array.isArray(ob.bids)? ob.bids.map(([p,q])=>({p:Number(p), q:Number(q)})) : [];
+            const asks = Array.isArray(ob.asks)? ob.asks.map(([p,q])=>({p:Number(p), q:Number(q)})) : [];
+            const price = (data[sym] && typeof data[sym].price==='number')? data[sym].price : null;
+            const bidMed = median(bids.map(b=>b.q).filter(x=>x>0));
+            const askMed = median(asks.map(a=>a.q).filter(x=>x>0));
+            function strength(q, med){
+              if(!q || !med) return "Zayıf";
+              const r = q/med;
+              if(r>=2.0) return "Güçlü";
+              if(r>=1.3) return "Orta";
+              return "Zayıf";
+            }
+            const sup = (function(){
+              const pool = (price!=null)? bids.filter(b=>b.p<=price) : bids;
+              const cand = pool.sort((a,b)=>b.p-a.p)[0] || bids[0] || null;
+              return cand? { px:cand.p, qty:cand.q, str: strength(cand.q,bidMed) } : { px:null, qty:null, str:null };
+            })();
+            const res = (function(){
+              const pool = (price!=null)? asks.filter(a=>a.p>=price) : asks;
+              const cand = pool.sort((a,b)=>a.p-b.p)[0] || asks[0] || null;
+              return cand? { px:cand.p, qty:cand.q, str: strength(cand.q,askMed) } : { px:null, qty:null, str:null };
+            })();
+            setData(prev=>{
+              const row = prev[sym] || {};
+              const next = Object.assign({}, prev);
+              next[sym] = Object.assign({}, row, {
+                obSupPx: sup.px, obSupQty: sup.qty, obSupStr: sup.str,
+                obResPx: res.px, obResQty: res.qty, obResStr: res.str,
+                obTs: Date.now()
+              });
+              return next;
+            });
+          }catch(_){}
+        }
+function connectWS(list){
+          cleanupWS(); reconnectRef.current.tries=0; if(!list||!list.length) return;
+          const kint=tfToBinance(tf);
+          function build(kind){
+            return list.map(sym=>{
+              const s = String(sym||'').toLowerCase();
+              if(kind==='miniKline') return s+'@miniTicker/'+s+'@kline_'+kint;
+              if(kind==='book') return s+'@bookTicker';
+              if(kind==='agg') return s+'@aggTrade';
+              return null;
+            }).filter(Boolean);
+          }
+          function chunk(items, maxLen, maxCount){
+            const out=[]; let cur=[], len=0;
+            for(const it of items){
+              const add = (cur.length?1:0) + it.length;
+              if((maxCount && cur.length>=maxCount) || (maxLen && len+add>maxLen)){
+                out.push(cur); cur=[]; len=0;
+              }
+              cur.push(it); len += add;
+            }
+            if(cur.length) out.push(cur);
+            return out;
+          }
+          const all=[];
+          const sets = [ ['miniKline', 1800, 60], ['book', 1800, 80], ['agg', 1800, 80] ];
+          for(const [kind, maxLen, maxCount] of sets){
+            const streams = build(kind);
+            const chunks = chunk(streams, maxLen, maxCount);
+            for(const c of chunks){
+              const url = WSS_BASE + '/stream?streams=' + c.join('/');
+              const ws = new WebSocket(url);
+              ws.onopen = ()=>{ reconnectRef.current.tries=0; };
+              ws.onerror = ()=>{};
+              ws.onclose = (ev)=>{
+                const code = (ev&&ev.code) || 1006;
+                const shouldRetry = reconnectRef.current.tries < reconnectRef.current.max && code!==1008;
+                if(!shouldRetry) return;
+                if(reconnectTimerRef.current) return; // already scheduled
+                reconnectRef.current.tries += 1;
+                const d = Math.min(15000, 1000*Math.pow(2, reconnectRef.current.tries));
+                reconnectTimerRef.current = setTimeout(()=>{
+                  reconnectTimerRef.current = null;
+                  if(symbols.length) connectWS(symbols);
+                }, d);
+              };
+              ws.onmessage = onWSEvent;
+              all.push(ws);
+            }
+          }
+          wsRef.current = all;
+        }
+        async function ensureHistory(sym){
+          if(ohlcRef.current[sym] && ohlcRef.current[sym].c && ohlcRef.current[sym].c.length) return;
+          try{
+            const interval=tfToBinance(tf);
+            let arr=null; try{ const r=await fetch(REST_BASE+"/api/v3/klines?symbol="+sym+"&interval="+interval+"&limit=500"); arr=await r.json(); }catch(e){ try{ const r2=await fetch("https://data-api.binance.vision/api/v3/klines?symbol="+sym+"&interval="+interval+"&limit=500"); arr=await r2.json(); }catch(_){ arr=null; } }
+            if(Array.isArray(arr)){
+              const o=[],h=[],l=[],c=[],v=[],q=[],n=[];
+              for(let i=0;i<arr.length;i++){ const k=arr[i]; o.push(Number(k[1])); h.push(Number(k[2])); l.push(Number(k[3])); c.push(Number(k[4])); v.push(Number(k[5])); q.push(Number(k[7])); n.push(Number(k[8])); }
+              ohlcRef.current[sym]={o,h,l,c,v,q,n}; closesRef.current[sym]=c.slice();
+              const rsi=computeRSI_TV(c.slice(0,-1),14);
+              const ema20=computeEMA(c,20), ema50=computeEMA(c,50), ema200=computeEMA(c,200);
+              const macd=computeMACD(c); const atr=computeATR14(ohlcRef.current[sym]);
+              const piv=computePivotsClassic(h[h.length-2],l[l.length-2],c[c.length-2]);
+              const bb=computeBB(c,20,2); const st=computeStochKD(ohlcRef.current[sym],14,3,3); const mfi=computeMFI(ohlcRef.current[sym],14);
+              const dmi=computeADX_DMI(ohlcRef.current[sym],14); const cci=computeCCI(ohlcRef.current[sym],20); const obv=computeOBV(ohlcRef.current[sym]); const vwap=computeVWAP(ohlcRef.current[sym]);
+              setData(prev=>{ const row=prev[sym]||{}; const price=c.length?c[c.length-1]:null; const next=Object.assign({},prev); next[sym]=Object.assign({},row,{price,rsi,macd:macd.macd,macdHist:macd.hist,ema20,ema50,ema200,atr:atr,pivots:piv,bbUpper:bb?bb.upper:null,bbLower:bb?bb.lower:null,bbWidth:bb?bb.width:null,stochK:st.K,stochD:st.D,mfi:mfi,adx:dmi.adx,plusDI:dmi.plusDI,minusDI:dmi.minusDI,cci:cci,obv:obv.obv,obvSlope:obv.slope,vwap:vwap,lastVolTF:(q&&q.length?q[q.length-1]:(v&&v.length?v[v.length-1]:null)),lastCandleUp:(c.length&&o.length? (c[c.length-1]>=o[o.length-1]) : null),last:Date.now()}); return next; });
+            }
+          }catch(_){}
+        }
+        function onWSEvent(evt){
+          const txt= typeof evt.data==="string"? evt.data : new TextDecoder().decode(evt.data);
+          const msg=JSON.parse(txt); const payload=msg.data||msg;
+          if(payload && payload.e==="24hrMiniTicker"){
+            const t = payload;
+            const sym = t.s;
+            const price = Number(t.c);
+            const open = Number(t.o);
+            const high24 = (t.h!=null ? Number(t.h) : null);
+            const low24  = (t.l!=null ? Number(t.l) : null);
+            const qVol   = (t.q!=null ? Number(t.q) : null);
+            const chg = open ? pct(price, open) : 0;
+
+            let pos=null, proxHi=null, proxLo=null, riskTag=null, riskNote=null;
+            if(high24!=null && low24!=null && price!=null && high24>low24){
+              const rng = high24 - low24;
+              pos    = (price - low24) / rng;
+              proxHi = (high24 - price) / rng;
+              proxLo = (price - low24) / rng;
+              if(pos >= 0.90){ riskTag="GEÇ ALIM RİSKİ"; riskNote="Fiyat 24s aralığın üst %10'unda; ortalama dönüş riski artar."; }
+              else if(pos <= 0.10){ riskTag="GEÇ SATIM RİSKİ"; riskNote="Fiyat 24s aralığın alt %10'unda; tepki alımı olasılığı artar."; }
+              else if(pos >= 0.75){ riskTag="ÜST BANT"; riskNote="Üst banda yakın; momentum sürerse kırılma denenebilir."; }
+              else if(pos <= 0.25){ riskTag="ALT BANT"; riskNote="Alt banda yakın; zayıflık sürerse destek kırılabilir."; }
+              else { riskTag="ORTA BANT"; riskNote="24s aralığın orta bölgesi; nötr risk."; }
+            }
+
+            setData(prev=>{
+              const row = prev[sym] || {};
+              const next = Object.assign({}, prev);
+              next[sym] = Object.assign({}, row, {
+                price, open,
+                changePct24h: chg,
+                qVol: (qVol!=null ? qVol : (row.qVol ?? null)),
+                high24h: (high24!=null ? high24 : (row.high24h ?? null)),
+                low24h:  (low24!=null  ? low24  : (row.low24h ?? null)),
+                proxHi, proxLo, pos24h: pos,
+                risk24hTag: riskTag, risk24hNote: riskNote,
+                last: Date.now()
+              });
+              return next;
+            });
+          }
+          if(payload && payload.e==="bookTicker"){
+            const b=payload; const sym=b.s; const ask=Number(b.a), bid=Number(b.b); const mid=(ask&&bid)?(ask+bid)/2:null; const spreadPct=(mid&&ask&&bid)?((ask-bid)/mid*100):null;
+            setData(prev=>{ const row=prev[sym]||{}; const next=Object.assign({},prev); next[sym]=Object.assign({},row,{ask,bid,spreadPct,last:Date.now()}); return next; });
+          }
+          if(payload && payload.e==="aggTrade"){
+            const tA=payload; const symA=tA.s; const ts=typeof tA.T==="number"?tA.T:Date.now(); const qty=Number(tA.q); const price=Number(tA.p); const isBuyerMaker=!!tA.m; const isTbBuy=!isBuyerMaker;
+            let buf=aggsRef.current[symA]||[]; buf.push([ts,qty,isTbBuy,price]); const cutoff=ts-6*60*60*1000; while(buf.length&&buf[0][0]<cutoff) buf.shift(); aggsRef.current[symA]=buf;
+            let tpm60=0; const cut60=ts-60000; for(let j=buf.length-1;j>=0;j--){ if(buf[j][0]>=cut60) tpm60++; else break; }
+            let c0=cStartRef.current[symA]; if(typeof c0!=="number") c0=currentCandleStart(tf);
+            let buyB=0,totB=0,buyQ=0,totQ=0; for(let j=buf.length-1;j>=0;j--){ const e=buf[j]; if(e[0]<c0) break; const qy=e[1]||0; const pr=e[3]||0; totB+=qy; if(pr>0) totQ+=qy*pr; if(e[2]){ buyB+=qy; if(pr>0) buyQ+=qy*pr; } }
+            const ratioAggBase=(totB>0)?(buyB/totB):null; const ratioAggQuote=(totQ>0)?(buyQ/totQ):null;
+            setData(prev=>{ const row=prev[symA]||{}; const next=Object.assign({},prev); next[symA]=Object.assign({},row,{tpm60:tpm60,tbr:(tbMode==="QUOTE"?ratioAggQuote:ratioAggBase),last:Date.now()}); return next; });
+          }
+          if(payload && payload.e==="kline"){
+            const k=payload.k; const lastVolTF = Number((k&&k.q!=null)?k.q:((k&&k.v!=null)?k.v:0)); const sym=payload.s; const close=Number(k.c); const closed=!!k.x; const qvol=Number(k.q); const vBase=Number(k.v); const qQuote=Number(k.Q); const Vtbb=Number(k.V);
+            cStartRef.current[sym]=k.t;
+            const carr=(closesRef.current[sym]=closesRef.current[sym]||[]); if(!carr.length) carr.push(close); else { if(closed) carr.push(close); else carr[carr.length-1]=close; } if(carr.length>600) carr.splice(0,carr.length-600);
+            let ohlc=(ohlcRef.current[sym]=ohlcRef.current[sym]||{o:[],h:[],l:[],c:[],v:[],q:[],n:[]});
+            function pu(arr,val){ if(!arr.length) arr.push(val); else { if(closed) arr.push(val); else arr[arr.length-1]=val; } if(arr.length>600) arr.splice(0,arr.length-600); }
+            pu(ohlc.o,Number(k.o)); pu(ohlc.h,Number(k.h)); pu(ohlc.l,Number(k.l)); pu(ohlc.c,close); pu(ohlc.v,vBase); pu(ohlc.q,qvol); pu(ohlc.n,Number(k.n));
+            const rsiLive=computeRSI_TV(carr,14); const ema20=computeEMA(carr,20), ema50=computeEMA(carr,50), ema200=computeEMA(carr,200); const macd=computeMACD(carr); const atr=computeATR14(ohlc);
+            const piv=(ohlc.h.length>1&&ohlc.l.length>1&&ohlc.c.length>1)? computePivotsClassic(ohlc.h[ohlc.h.length-2], ohlc.l[ohlc.l.length-2], ohlc.c[ohlc.c.length-2]) : null;
+            const bb=computeBB(carr,20,2); const st=computeStochKD(ohlc,14,3,3); const mfi=computeMFI(ohlc,14);
+            const dmi=computeADX_DMI(ohlc,14); const cci=computeCCI(ohlc,20); const obv=computeOBV(ohlc); const vwap=computeVWAP(ohlc);
+            let tbrTF=null; const ratioTickerQuote=(qQuote>0 && qvol>0)? (qQuote/qvol):null; const ratioTickerBase=(Vtbb>0 && vBase>0)? (Vtbb/vBase):null; const wantQuote=(tbMode==="QUOTE"); tbrTF = wantQuote? (ratioTickerQuote!=null?ratioTickerQuote:null) : (ratioTickerBase!=null?ratioTickerBase:null);
+            const rvol=computeRVOLStrong(ohlc.q, ohlc.n); const sig=deriveSignal(rsiLive,macd.hist,ema20,ema50);
+            setData(prev=>{ const row=prev[sym]||{}; const commentary=buildCommentary(sym,close,rsiLive,macd.macd,macd.hist,ema20,ema50,ema200,(typeof row.changePct24h==="number"?row.changePct24h:null)); const next=Object.assign({},prev); next[sym]=Object.assign({},row,{price:close,rsi:rsiLive,macd:macd.macd,macdHist:macd.hist,ema20,ema50,ema200,atr:atr,pivots:piv,rvol:rvol,bbUpper:bb?bb.upper:null,bbLower:bb?bb.lower:null,bbWidth:bb?bb.width:null,stochK:st.K,stochD:st.D,mfi:mfi,adx:dmi.adx,plusDI:dmi.plusDI,minusDI:dmi.minusDI,cci:cci,obv:obv.obv,obvSlope:obv.slope,vwap:vwap,tbr:(tbrTF!=null?tbrTF:(row.tbr!=null?row.tbr:null)),signal:sig,commentary:commentary,last:Date.now()}); return next; });
+          }
+
+        function applyMode(m){
+          setMode(m);
+          if(m==="TOP10"){ if(topCacheRef.current.TOP10.length) setSymbols(topCacheRef.current.TOP10.slice()); else { loadTopByVolume(10).then(list=>{ topCacheRef.current.TOP10=list; setSymbols(list); }).catch(()=>{}); } }
+          else if(m==="TOP50"){ if(topCacheRef.current.TOP50.length) setSymbols(topCacheRef.current.TOP50.slice()); else { loadTopByVolume(50).then(list=>{ topCacheRef.current.TOP50=list; setSymbols(list); }).catch(()=>{}); } }
+          else if(m==="CUSTOM"){ if(!symbols.length) setSymbols(["BTCUSDT","ETHUSDT","BNBUSDT"]); }
+        }
+        function addCustomSymbols(){ const parts=customInput.split(/[,\n\s]+/).filter(Boolean); if(!parts.length) return; const syms=uniq(parts.map(toUsdtSymbol)); setSymbols(uniq([].concat(symbols||[],syms))); setMode("CUSTOM"); setCustomInput(""); }
+
+        function removeSymbol(sym){
+          setSymbols(prev => (prev||[]).filter(s => s!==sym));
+        }
+        async function selectAllTop50(){
+          try{
+            let list = (topCacheRef.current && topCacheRef.current.TOP50 && topCacheRef.current.TOP50.length)
+              ? topCacheRef.current.TOP50
+              : await loadTopByVolume(50);
+            topCacheRef.current.TOP50 = list;
+            setSymbols(list);
+            setMode("CUSTOM");
+          }catch(_){}
+        }
+        function clearAllCustom(){
+          setSymbols([]);
+        }
+    
+        useEffect(()=>{ try{ if(mode==="CUSTOM"){ localStorage.setItem("customSymbols", JSON.stringify(symbols)); } }catch(e){} }, [mode, symbols]);
+
+        const rows = useMemo(()=> (symbols||[]).map(s=> ({ symbol:s, ...(data[s]||{}) })), [symbols, data]);
+        const sortedRows = React.useMemo(()=>{
+          const arr = (rows||[]).slice();
+          const dir = (sortDir === 'asc') ? 1 : -1;
+          function val(row,key){
+            if(key==='symbol') return row.symbol||'';
+            if(key==='price') return (typeof row.price==='number')? row.price : -Infinity;
+            if(key==='changePct24h') return (typeof row.changePct24h==='number')? row.changePct24h : -Infinity;
+            if(key==='rsi') return (typeof row.rsi==='number')? row.rsi : -Infinity;
+            if(key==='volume24h'){ const v=(row.qVol!=null)?row.qVol:row.vol24h; return (typeof v==='number')? v : -Infinity; }
+            if(key==='lastVolTF') return (typeof row.lastVolTF==='number')? row.lastVolTF : -Infinity;
+            if(key==='tpm60') return (typeof row.tpm60==='number')? row.tpm60 : -Infinity;
+            if(key==='tbr') return (typeof row.tbr==='number')? row.tbr : -Infinity;
+            if(key==='spreadPct') return (typeof row.spreadPct==='number')? row.spreadPct : Infinity;
+            if(key==='signal'){ const s=row.signal||'NEUTRAL'; return s==='LONG'?2:(s==='NEUTRAL'?1:0); }
+            return 0;
+          }
+          arr.sort((a,b)=>{
+            let va = val(a, sortKey);
+            let vb = val(b, sortKey);
+            if (sortKey==='symbol' || typeof va==='string' || typeof vb==='string'){
+              va = String(va); vb = String(vb);
+              const cmp = va.localeCompare(vb);
+              return cmp * dir;
+            }
+            return (va - vb) * dir;
+          });
+          return arr;
+        }, [rows, sortKey, sortDir]);
+
+        
+
+        function headerIndicator(sk,dir,key){ return sk===key ? (dir==="asc"?"▲":"▼") : ""; }
+        function requestSort(key){
+          setSortKey(prev=>{
+            if(prev===key){
+              setSortDir(d=> d==="asc" ? "desc" : "asc");
+              return prev;
+            } else {
+              setSortDir("desc");
+              return key;
+            }
+          });
+        }
+
+function colorByDir(val,upThr,lowThr){
+          if(typeof val!=="number") return "";
+          return val>upThr ? "text-emerald-400" : (val<lowThr ? "text-rose-400" : "text-yellow-400");
+        }
+
+        return (
+          <div className="min-h-screen p-4 bg-black">
+            <div className="mx-auto max-w-7xl">
+              <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 mb-4">
+                <div>
+                  <h1 className="text-2xl font-bold">Canlı Kripto Listesi — Binance</h1>
+                  <p className="text-slate-400 text-sm">Top10 / Top50 / Custom • Satıra tıkla, teknik analiz kartı açılsın.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={()=>applyMode("TOP10")} className={"px-3 py-2 rounded-lg text-sm border "+(mode==="TOP10"?"bg-emerald-600 border-emerald-500":"bg-gray-800 border-gray-700 hover:bg-gray-700")}>Top 10</button>
+                  <button onClick={()=>applyMode("TOP50")} className={"px-3 py-2 rounded-lg text-sm border "+(mode==="TOP50"?"bg-emerald-600 border-emerald-500":"bg-gray-800 border-gray-700 hover:bg-gray-700")}>Top 50</button>
+                  <button onClick={()=>applyMode("CUSTOM")} className={"px-3 py-2 rounded-lg text-sm border "+(mode==="CUSTOM"?"bg-emerald-600 border-emerald-500":"bg-gray-800 border-gray-700 hover:bg-gray-700")}>Custom</button>
+                </div>
+              </header>
+
+              <div className="mb-3 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">Timeframe:</span>
+                  <select value={tf} onChange={e=>setTf(e.target.value)} className="px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-xs">
+                    <option value="1m">1 dk</option>
+                    <option value="1H">1 saat</option>
+                    <option value="4H">4 saat</option>
+                    <option value="1D">1 gün</option>
+                    <option value="1W">1 hafta</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">Taker Buy:</span>
+                  <select value={tbMode} onChange={e=>setTbMode(e.target.value)} className="px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-xs">
+                    <option value="QUOTE">Quote % (USDT)</option>
+                    <option value="BASE">Base % (Coin)</option>
+                  </select>
+                  <span className="text-xs text-slate-400 ml-2">RVOL eşik:</span>
+                  <select value={rvolThresh} onChange={e=>setRvolThresh(parseFloat(e.target.value))} className="px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-xs">
+                    <option value="1.2">1.2</option>
+                    <option value="1.5">1.5</option>
+                    <option value="2.0">2.0</option>
+                  </select>
+                </div>
+              </div>
+
+              
+              {mode==="CUSTOM" && (
+                <div className="mb-3 bg-gray-900/60 border border-gray-800 rounded-xl p-3 space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <input value={customInput} onChange={e=>setCustomInput(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); addCustomSymbols(); } }} placeholder="BTC, ETH, SOL" className="flex-1 min-w-[220px] px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-xs outline-none" />
+                    <button onClick={addCustomSymbols} className="px-3 py-1 rounded-md border bg-gray-800 border-gray-700 hover:bg-gray-700 text-xs">Ekle</button>
+                    <button onClick={clearAllCustom} className="px-3 py-1 rounded-md border bg-gray-800 border-gray-700 hover:bg-gray-700 text-xs">Tümünü Kaldır</button>
+                    <button onClick={selectAllTop50} className="px-3 py-1 rounded-md border bg-gray-800 border-gray-700 hover:bg-gray-700 text-xs">Tümünü Seç (Top 50)</button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {symbols.map(s => (
+                      <span key={s} className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-xs">
+                        <span>{s}</span>
+                        <button onClick={(e)=>{e.stopPropagation(); removeSymbol(s);}} className="text-slate-400 hover:text-rose-400" title="Kaldır">✕</button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="text-xs text-slate-400">Not: Custom moddayken listen otomatik kaydedilir.</div>
+                </div>
+              )}
+
+              <div className="overflow-auto rounded-xl border border-gray-800">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-900/60 text-slate-300">
+                    <tr>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("symbol")} className="flex items-center gap-1 hover:underline">Sembol <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"symbol")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("price")} className="flex items-center gap-1 hover:underline">Fiyat <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"price")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("changePct24h")} className="flex items-center gap-1 hover:underline">24s % <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"changePct24h")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("rsi")} className="flex items-center gap-1 hover:underline">RSI <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"rsi")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("volume24h")} className="flex items-center gap-1 hover:underline">Hacim (24s) <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"volume24h")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("lastVolTF")} className="flex items-center gap-1 hover:underline">Vol (son mum) <span className="opacity-70">{headerIndicator(sortKey,sortDir,"lastVolTF")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("tpm60")} className="flex items-center gap-1 hover:underline">Yoğunluk (60s) <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"tpm60")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("tbr")} className="flex items-center gap-1 hover:underline">Taker Buy % (TF) <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"tbr")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("spreadPct")} className="flex items-center gap-1 hover:underline">Spread <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"spreadPct")}</span></button></th>
+                      <th className="px-3 py-2"><button onClick={()=>requestSort("signal")} className="flex items-center gap-1 hover:underline">Sinyal <span className="text-[10px] text-slate-400">{headerIndicator(sortKey,sortDir,"signal")}</span></button></th>
+                      
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                    {sortedRows.map(row=>{
+                      const isOpen=expanded===row.symbol;
+                      const ch=row.changePct24h; const chCls = typeof ch==="number" ? (ch>0?"text-emerald-400":(ch<0?"text-rose-400":"text-yellow-400")) : "";
+                      const sig=row.signal||"NEUTRAL"; const sigCls = sig==="LONG"?"text-emerald-300 border-emerald-500/40 bg-emerald-500/10":(sig==="SHORT"?"text-rose-300 border-rose-500/40 bg-rose-500/10":"text-yellow-300 border-yellow-500/40 bg-yellow-500/10");
+                      const tbrCls=colorByDir(row.tbr,0.55,0.45);
+                      return (
+                        <React.Fragment key={row.symbol}>
+                          <tr className="hover:bg-gray-900/40 cursor-pointer" onClick={()=>{ const isOpen = expanded===row.symbol; setExpanded(isOpen?null:row.symbol); if(!isOpen){ ensureHistory(row.symbol,200); ensureOrderBook(row.symbol); } }}>
+                            <td className="px-3 py-2 font-medium">{row.symbol}</td>
+                            <td className="px-3 py-2">{row.price!=null? num(row.price,6):"-"}</td>
+                            <td className={"px-3 py-2 "+chCls}>{typeof ch==="number"? ch.toFixed(2)+"%":"-"}</td>
+                            <td className="px-3 py-2">{row.rsi!=null? row.rsi.toFixed(1):"-"}</td>
+                            <td className="px-3 py-2">{row.qVol!=null? num(row.qVol,0):"-"}</td>
+                            <td className={"px-3 py-2 "+(row.lastCandleUp===true?"text-emerald-400":(row.lastCandleUp===false?"text-rose-400":"text-slate-400"))}>{row.lastVolTF!=null? num(row.lastVolTF,0):"-"}</td>
+                            <td className="px-3 py-2">{row.tpm60!=null? row.tpm60:"-"}</td>
+                            <td className={"px-3 py-2 "+tbrCls}>{typeof row.tbr==="number"? (row.tbr*100).toFixed(1)+"%":"-"}</td>
+                            <td className="px-3 py-2">{row.spreadPct!=null? row.spreadPct.toFixed(3)+"%":"-"}</td>
+                            <td className="px-3 py-2"><span className={"px-2 py-1 rounded-md border "+sigCls}>{sig}</span></td>
+                            
+                          </tr>
+                          {isOpen && (
+                            <tr>
+                              <td colSpan={10} className="p-3 bg-black">
+                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 w-full items-stretch auto-rows-fr">
+                                  {/* Göstergeler */}
+                                  <div className="card h-full flex flex-col">
+                                    <div className="px-3 py-2 card-header flex items-center justify-between">
+                                      <h3 className="font-semibold">Göstergeler</h3>
+                                      <span className={"text-xs px-2 py-1 rounded-md border "+sigCls}>{sig}</span>
+                                    </div>
+                                    <div className="p-3 grid grid-cols-2 lg:grid-cols-3 gap-2 items-stretch">
+                                      <div className={tileTone((row.pos24h!=null && row.pos24h<=0.25), (row.pos24h!=null && row.pos24h>=0.75))}>
+                                        <div className="text-[11px] text-slate-400">24s Konum & Risk</div>
+                                        <div className="text-sm font-medium">
+                                          { (row.high24h!=null && row.low24h!=null && row.price!=null && row.high24h>row.low24h)
+                                            ? (()=>{ 
+                                                const rng = row.high24h - row.low24h;
+                                                const nearTopPct = ((row.high24h - row.price)/rng)*100;
+                                                const nearBotPct = ((row.price - row.low24h)/rng)*100;
+                                                return `Üste ${nearTopPct.toFixed(1)}% · Alta ${nearBotPct.toFixed(1)}%`;
+                                              })()
+                                            : "-" }
+                                        </div>
+                                        <div className="text-[11px] text-slate-400">{row.risk24hNote || "-"}</div>
+                                      </div>
+
+                                      <div className={tileTone(row.rsi!=null && row.rsi>=60, row.rsi!=null && row.rsi<=40)}>
+                                        <div className="text-[11px] text-slate-400">RSI(14)</div>
+                                        <div className={"text-sm font-semibold "+colorByDir(row.rsi,60,40)}>{row.rsi!=null? row.rsi.toFixed(1):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.rsi!=null ? (row.rsi>70?"aşırı alım": row.rsi<30?"aşırı satım": row.rsi>55?"alıcı baskısı": row.rsi<45?"satıcı baskısı":"nötr") : "-"}</div>
+                                      </div>
+                                      <div className={tileTone(row.macdHist!=null && row.macdHist>0, row.macdHist!=null && row.macdHist<0)}>
+                                        <div className="text-[11px] text-slate-400">MACD</div>
+                                        <div className={"text-sm font-semibold "+(row.macdHist!=null?(row.macdHist>0?"text-emerald-400":row.macdHist<0?"text-rose-400":"text-yellow-400"):"")}>{row.macd!=null? row.macd.toFixed(4):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.macdHist!=null? (row.macdHist>0?"momentum ↑":"momentum ↓"):"-"}</div>
+                                      </div>
+                                      <div className={tileTone((row.tbr!=null && row.tbr>0.5 && ((row.macdHist!=null && row.macdHist>0) || (row.vwap!=null && row.price!=null && row.price>row.vwap))), (row.tbr!=null && row.tbr<0.5 && ((row.macdHist!=null && row.macdHist<0) || (row.vwap!=null && row.price!=null && row.price<row.vwap))))}>
+                                        <div className="text-[11px] text-slate-400">Taker Buy (TF)</div>
+                                        <div className={"text-sm font-semibold "+tbrCls}>{typeof row.tbr==="number"? (row.tbr*100).toFixed(1)+"%":"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{typeof row.tbr==="number"? (row.tbr>0.55?"alıcı baskısı": row.tbr<0.45?"satıcı baskısı":"denge"):"-"}</div>
+                                      </div>
+                                      <div className={tileTone((row.rvol!=null && row.rvol>=rvolThresh && ((row.macdHist!=null && row.macdHist>0) || (row.vwap!=null && row.price!=null && row.price>row.vwap))), (row.rvol!=null && row.rvol>=rvolThresh && ((row.macdHist!=null && row.macdHist<0) || (row.vwap!=null && row.price!=null && row.price<row.vwap))))}>
+                                        <div className="text-[11px] text-slate-400">RVOL*</div>
+                                        <div className={"text-sm font-semibold "+(row.rvol!=null?(row.rvol>=rvolThresh?"text-emerald-400":"text-yellow-400"):"")}>{row.rvol!=null? row.rvol.toFixed(2):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.rvol!=null? (row.rvol>=rvolThresh?"yüksek anomali":"ortalama/altı"):"-"}</div>
+                                      </div>
+                                      <div className={tileTone((row.ema20!=null && row.ema50!=null && row.ema20>row.ema50), (row.ema20!=null && row.ema50!=null && row.ema20<row.ema50))}>
+                                        <div className="text-[11px] text-slate-400">Trend</div>
+                                        <div className={"text-sm font-semibold "+(row.ema20!=null&&row.ema50!=null?(row.ema20>row.ema50?"text-emerald-400":row.ema20<row.ema50?"text-rose-400":"text-yellow-400"):"")}>{row.ema20!=null&&row.ema50!=null?(row.ema20>row.ema50?"yukarı":"aşağı"):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">EMA20 / EMA50</div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Gelişmiş Göstergeler */}
+                                  <div className="card h-full flex flex-col">
+                                    <div className="px-3 py-2 card-header"><h3 className="font-semibold">Gelişmiş Göstergeler</h3></div>
+                                    <div className="p-3 grid grid-cols-2 lg:grid-cols-3 gap-2 items-stretch">
+                                      <div className={tileTone((row.plusDI!=null && row.minusDI!=null && row.adx!=null && row.adx>=25 && row.plusDI>row.minusDI), (row.plusDI!=null && row.minusDI!=null && row.adx!=null && row.adx>=25 && row.minusDI>row.plusDI))}>
+                                        <div className="text-[11px] text-slate-400">ADX(14)</div>
+                                        <div className={"text-sm font-semibold " + (typeof row.adx==="number" ? (row.adx>=25 ? "text-emerald-400" : "text-yellow-400") : "")}>{row.adx!=null? row.adx.toFixed(1):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{(row.plusDI!=null&&row.minusDI!=null)? ("+DI "+row.plusDI.toFixed(1)+" / -DI "+row.minusDI.toFixed(1)):"-"}</div>
+                                      </div>
+                                      <div className={tileTone(row.cci!=null && row.cci>100, row.cci!=null && row.cci<-100)}>
+                                        <div className="text-[11px] text-slate-400">CCI(20)</div>
+                                        <div className={"text-sm font-semibold " + (typeof row.cci==="number" ? (row.cci>100 ? "text-emerald-400" : (row.cci<-100 ? "text-rose-400" : "text-yellow-400")) : "")}>{row.cci!=null? row.cci.toFixed(0):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.cci!=null? (row.cci>100?"pozitif momentum": row.cci<-100?"negatif momentum":"nötr"):"-"}</div>
+                                      </div>
+                                      <div className={tileTone(row.obvSlope===1, row.obvSlope===-1)}>
+                                        <div className="text-[11px] text-slate-400">OBV</div>
+                                        <div className={"text-sm font-semibold " + (row.obvSlope===1 ? "text-emerald-400" : (row.obvSlope===-1 ? "text-rose-400" : "text-yellow-400"))}>{row.obv!=null? num(row.obv,0):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.obvSlope===1?"alıcı ağırlık":row.obvSlope===-1?"satıcı ağırlık":"denge"}</div>
+                                      </div>
+                                      <div className={tileTone((row.vwap!=null && row.price!=null && row.price>row.vwap), (row.vwap!=null && row.price!=null && row.price<row.vwap))}>
+                                        <div className="text-[11px] text-slate-400">VWAP</div>
+                                        <div className="text-sm font-semibold">{row.vwap!=null? num(row.vwap,6):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{(row.vwap!=null && row.price!=null)? (row.price>row.vwap?"fiyat > vwap":"fiyat < vwap"):"-"}</div>
+                                      </div>
+
+                                      <div className={tileTone(((row.bbUpper!=null && row.bbLower!=null && row.price!=null) ? ((row.price - row.bbLower) / Math.max(1e-9,(row.bbUpper-row.bbLower)) > 0.66) : false), ((row.bbUpper!=null && row.bbLower!=null && row.price!=null) ? ((row.price - row.bbLower) / Math.max(1e-9,(row.bbUpper-row.bbLower)) < 0.33) : false))}>
+                                        <div className="text-[11px] text-slate-400">Bollinger(20,2)</div>
+                                        <div className="text-sm font-semibold">{(row.bbLower!=null && row.bbUpper!=null && row.price!=null) ? (((row.price-row.bbLower)/(row.bbUpper-row.bbLower))*100).toFixed(1)+"%" : "-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{(row.bbLower!=null && row.bbUpper!=null && row.price!=null) ? (row.price>row.bbUpper?"üst band üstü": row.price<row.bbLower?"alt band altı":"bant içinde"):"-"}</div>
+                                      </div>
+                                      <div className={tileTone((row.stochK!=null && row.stochD!=null && row.stochK>row.stochD && row.stochK<80), (row.stochK!=null && row.stochD!=null && row.stochK<row.stochD && row.stochK>20))}>
+                                        <div className="text-[11px] text-slate-400">%K/%D (Stoch)</div>
+                                        <div className="text-sm font-semibold">{row.stochK!=null? row.stochK.toFixed(1):"-"} / {row.stochD!=null? row.stochD.toFixed(1):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{(row.stochK!=null&&row.stochD!=null)? (row.stochK>80 && row.stochK>row.stochD?"aşırı alım — zayıflama": row.stochK<20 && row.stochK<row.stochD?"aşırı satım — toparlanma":"nötr"):"-"}</div>
+                                      </div>
+                                      <div className={tileTone(row.mfi!=null && row.mfi>50, row.mfi!=null && row.mfi<50)}>
+                                        <div className="text-[11px] text-slate-400">MFI(14)</div>
+                                        <div className="text-sm font-semibold">{row.mfi!=null? row.mfi.toFixed(1):"-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{row.mfi!=null? (row.mfi>80?"aşırı alım": row.mfi<20?"aşırı satım":"nötr"):"-"}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Destek/Direnç */}
+                                  <div className="card h-full flex flex-col">
+                                    <div className="px-3 py-2 card-header flex items-center justify-between">
+                                      <h3 className="font-semibold">Destek / Direnç</h3>
+                                      <span className={"text-xs px-2 py-1 rounded-md border "+sigCls}>{sig}</span>
+                                    </div>
+                                    <div className="p-3 space-y-3">
+                                      {(() => { try {
+                                        const priceNow=row.price; const ohlc=(ohlcRef.current && ohlcRef.current[row.symbol])? ohlcRef.current[row.symbol] : null;
+                                        const swings=computeSwingLevels(ohlc,3,3,300); const sr=nearestSR(priceNow,swings.highs,swings.lows);
+                                        const z=srZones(sr.support,sr.resistance,row.atr,priceNow); const nearSup=sr.support!=null?sr.support:null; const nearRes=sr.resistance!=null?sr.resistance:null;
+                                        const supZone=z.supZone, resZone=z.resZone; const lastClosed=(ohlc&&ohlc.c&&ohlc.c.length>1)? ohlc.c[ohlc.c.length-2]:null;
+                                        const supBroken=(supZone&&lastClosed!=null)? (lastClosed<supZone[0]) : ((nearSup!=null&&lastClosed!=null)? (lastClosed<nearSup):false);
+                                        const resCleared=(resZone&&lastClosed!=null)? (lastClosed>resZone[1]) : ((nearRes!=null&&lastClosed!=null)? (lastClosed>nearRes):false);
+                                        return (
+                                          <>
+                                            <div className="grid grid-cols-2 gap-3 items-stretch justify-center max-w-xl mx-auto">
+                                              <div className={tileTone((nearSup!=null && priceNow!=null && priceNow>nearSup && !supBroken), (supBroken===true))}>
+                                                <div className="text-[11px] text-slate-400">Destek (yakın)</div>
+                                                <div className="text-sm font-semibold text-rose-300 numwrap">{nearSup!=null? num(nearSup,6):"-"}</div>
+                                                <div className="text-[11px] text-slate-400 mt-0.5 numwrap">{supZone?("Bölge: ["+num(supZone[0],6)+" ~ "+num(supZone[1],6)+"]"):"-"}</div>
+                                                {supBroken ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-rose-500/40 text-rose-300 bg-rose-500/10">destek kırıldı (RVOL≥{rvolThresh})</span> : <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10">kırılım — zayıf hacim</span>) : (nearSup!=null && lastClosed!=null ? <span className="mt-1 inline-block text-[11px] text-slate-400">üstünde</span> : null)}
+                                              </div>
+                                              <div className={tileTone((resCleared===true), (nearRes!=null && priceNow!=null && priceNow<nearRes && !resCleared))}>
+                                                <div className="text-[11px] text-slate-400">Direnç (yakın)</div>
+                                                <div className="text-sm font-semibold text-emerald-300 numwrap">{nearRes!=null? num(nearRes,6):"-"}</div>
+                                                <div className="text-[11px] text-slate-400 mt-0.5 numwrap">{resZone?("Bölge: ["+num(resZone[0],6)+" ~ "+num(resZone[1],6)+"]"):"-"}</div>
+                                                {resCleared ? (row.rvol!=null && row.rvol>=rvolThresh ? <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-emerald-500/40 text-emerald-300 bg-emerald-500/10">direnç aşıldı (RVOL≥{rvolThresh})</span> : <span className="mt-1 inline-block text-[11px] px-2 py-0.5 rounded-md border border-yellow-500/40 text-yellow-300 bg-yellow-500/10">kırılım — zayıf hacim</span>) : (nearRes!=null && lastClosed!=null ? <span className="mt-1 inline-block text-[11px] text-slate-400">altında</span> : null)}
+                                              </div>
+                                            </div>
+                                            <div className="grid grid-cols-3 md:grid-cols-3 xl:grid-cols-3 gap-3 items-stretch mt-2">
+                                              {(() => {
+                                                const pv = row.pivots || ((ohlc&&ohlc.h&&ohlc.l&&ohlc.c&&ohlc.h.length>1&&ohlc.l.length>1&&ohlc.c.length>1) ? computePivotsClassic(ohlc.h[ohlc.h.length-2], ohlc.l[ohlc.l.length-2], ohlc.c[ohlc.c.length-2]) : null); return (<></>);})()}
+
+                                              <div className="mt-2 rounded-lg border border-slate-800 bg-gray-900/40 p-2">
+                                                <div className="text-[11px] text-slate-500 mb-1">Order Book (yakın birikimler)</div>
+                                                <div className="flex items-center justify-between text-[12px]">
+                                                  <span>Destek (OB)</span>
+                                                  <span className={"px-2 py-0.5 rounded-md border "+(row.obSupStr==='Güçlü'?'border-emerald-400 text-emerald-600':(row.obSupStr==='Orta'?'border-amber-400 text-amber-600':'border-slate-300 text-slate-500'))}>
+                                                    {row.obSupPx!=null? num(row.obSupPx,6):'-'} · {row.obSupQty!=null? num(row.obSupQty,0):'-'} {row.obSupStr?('('+row.obSupStr+')'):''}
+                                                  </span>
+                                                </div>
+                                                <div className="flex items-center justify-between text-[12px] mt-1">
+                                                  <span>Direnç (OB)</span>
+                                                  <span className={"px-2 py-0.5 rounded-md border "+(row.obResStr==='Güçlü'?'border-rose-400 text-rose-600':(row.obResStr==='Orta'?'border-amber-400 text-amber-600':'border-slate-300 text-slate-500'))}>
+                                                    {row.obResPx!=null? num(row.obResPx,6):'-'} · {row.obResQty!=null? num(row.obResQty,0):'-'} {row.obResStr?('('+row.obResStr+')'):''}
+                                                  </span>
+                                                </div>
+                                              </div>
+
+                                            </div>
+                                          </>
+                                        );
+                                      } catch(e){ return <div className="text-rose-400 text-xs">Kart hatası: {String(e.message||e)}</div>; } })()}
+                                    </div>
+                                  </div>
+
+                                  {/* Piyasa Duyarlılığı (AI / dış kaynak) */}
+                                  <div className="card h-full flex flex-col">
+                                    <div className="px-3 py-2 card-header flex items-center justify-between">
+                                      <h3 className="font-semibold">Piyasa Duyarlılığı (AI / Dış Kaynaklar)</h3>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[11px] text-slate-400">Kaynak: {extSent && extSent.source ? extSent.source : "CoinGecko / Alternative.me"}</span>
+                                        <label className="text-[11px] text-slate-400 hidden md:block">Sembol:</label>
+                                        <select value={lcSymbol} onChange={e=>setLcSymbol(e.target.value)} className="text-[11px] px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-800">
+                                          <option>BTC</option>
+                                          <option>ETH</option>
+                                          <option>BNB</option>
+                                        </select>
+                                        <button onClick={()=>setShowKey(s=>!s)} className="text-[11px] px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-800">API</button>
+                                        <button onClick={()=>setShowProxy(s=>!s)} className="text-[11px] px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-800">Proxy</button>
+                                      </div>
+                                    </div>
+                                    <div className="p-3 grid grid-cols-2 md:grid-cols-3 gap-2 items-stretch auto-rows-fr">
+                                      {showProxy && (
+                                        <div className="col-span-2 md:col-span-3 mini px-3 py-2">
+                                          <label className="text-[11px] text-slate-400 block mb-1">Sentiment Proxy URL (Vercel/Netlify)</label>
+                                          <div className="flex gap-2">
+                                            <input name="sentiment-proxy-url" value={proxyUrl} onChange={(e)=>{ setProxyUrl(e.target.value); try{ localStorage.setItem("SENTIMENT_PROXY_URL", e.target.value); }catch(_){ } }} placeholder="https://your-domain.vercel.app/api/sentiment-proxy" className="flex-1 px-2 py-1 rounded-md bg-gray-900 border border-gray-700 text-[12px]" />
+                                            <button onClick={()=>{ try{ localStorage.setItem("SENTIMENT_PROXY_URL", proxyUrl); }catch(_){ } }} className="px-2 py-1 rounded-md border border-emerald-600 bg-emerald-600/20 text-emerald-300 text-[12px]">Kaydet</button>
+                                          </div>
+                                          <div className="text-[11px] text-slate-400 mt-1">Proxy ayarlıysa önce proxy denenir; olmazsa doğrudan kaynaklara düşer.</div>
+                                        </div>
+                                      )}
+    
+                                      {extSent && extSent.error && (<div className="col-span-2 md:col-span-3 mini px-3 py-2 text-amber-300 text-[12px]">Duyarlılık kaynağına ulaşılamadı (anahtar/CORS). Alternative.me yedeği devrede ya da veri bekleniyor.</div>)}
+                                      {showKey && (
+                                        <div className="col-span-2 md:col-span-3 mini px-3 py-2">
+                                          <label className="text-[11px] text-slate-400 block mb-1">LunarCrush API Key</label>
+                                          <div className="flex gap-2">
+                                            <input value={lunarKey} onChange={e=>{ setLunarKey(e.target.value); try{ localStorage.setItem("LC_API_KEY", e.target.value); }catch(_){ } }} placeholder="Bearer key yapıştırın" className="flex-1 px-2 py-1 rounded-md bg-gray-900 border border-gray-700 text-[12px]" />
+                                            <button onClick={()=>{ try{ localStorage.setItem("LC_API_KEY", lunarKey); }catch(_){ } }} className="px-2 py-1 rounded-md border border-emerald-600 bg-emerald-600/20 text-emerald-300 text-[12px]">Kaydet</button>
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div className={tileTone((extSent && typeof extSent.value==="number" && (extSent.classification==="Greed")), (extSent && typeof extSent.value==="number" && (extSent.classification==="Fear")))}>
+                                        <div className="text-[11px] text-slate-400">Sentiment Skoru</div>
+                                        <div className={
+                                          "text-lg font-semibold " + (
+                                            extSent && extSent.classification ? (
+                                              extSent.classification.indexOf('Greed')>=0 ? "text-emerald-400" :
+                                              (extSent.classification.indexOf('Fear')>=0 ? "text-rose-400" : "text-yellow-400")
+                                            ) : ""
+                                          )
+                                        }>{extSent && typeof extSent.value==="number" ? extSent.value.toFixed(0) : "-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">{extSent && extSent.classification ? extSent.classification : "bekleniyor..."}</div>
+                                      </div>
+                                      <div className={tileTone(false,false)}>
+                                        <div className="text-[11px] text-slate-400">Güncellenme</div>
+                                        <div className="text-sm font-semibold">{extSent && extSent.updatedAt ? new Date(extSent.updatedAt).toLocaleString() : "-"}</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">5 dakikada bir yenilenir</div>
+                                      </div>
+                                      <div className={tileTone(false,false)}>
+                                        <div className="text-[11px] text-slate-400">%100 dış kaynak</div>
+                                        <div className="text-sm font-semibold">Yerel skor yok</div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">İstersen başka güvenilir API’leri de ekleyebilirim.</div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Bilgi */}
+                                  <div className="card h-full flex flex-col">
+                                    <div className="px-3 py-2 card-header"><h3 className="font-semibold">Bilgi</h3></div>
+                                    <div className="p-3 text-slate-300 text-sm">{row.commentary||"-"}</div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-xs text-slate-400 mt-3">Not: Geliştirme içindir. Küçük bir HTTP sunucusuyla açın (örn: <code>python -m http.server 8080</code> → <code>http://localhost:8080/index.html</code>).</p>
+            </div>
+          </div>
+        );
+      }
+
+      function App(){ return <CryptoLiveList/>; }
+      ReactDOM.render(<App/>, document.getElementById('root'));
+    </script>
+  </body>
+</html>
